@@ -168,7 +168,16 @@ def test_collect_diagnostics_aggregates_statuses_without_reading_secret_values(m
     assert "لا يثبت أن Facebook قبل الجلسة" in rendered
 
 
-def test_diagnostic_report_applies_legacy_rights_migration_without_writing_config(monkeypatch, tmp_path):
+def test_diagnostic_defaults_are_strict_and_require_manual_review():
+    import configparser
+
+    settings = report._rights_settings(configparser.ConfigParser())
+    assert settings["rights_gate_mode"] == "strict"
+    assert settings["rights_operator_statement"] == ""
+    assert settings["review_before_upload"] is True
+
+
+def test_diagnostic_report_preserves_strict_rights_mode(monkeypatch, tmp_path):
     _write_app_state(tmp_path)
     config_path = tmp_path / "config.ini"
     config_path.write_text("[STUDIO]\nRIGHTS_GATE_MODE = strict\nRIGHTS_OPERATOR_STATEMENT =\n", encoding="utf-8")
@@ -176,7 +185,7 @@ def test_diagnostic_report_applies_legacy_rights_migration_without_writing_confi
 
     data = report.collect_diagnostics(str(tmp_path), version="test")
 
-    assert data["rights"]["mode"] == "operator_confirmed"
+    assert data["rights"]["mode"] == "strict"
     assert data["rights"]["configuration_errors"] == []
     assert not any(issue["category"] == "rights" for issue in data["issues"])
     assert "RIGHTS_GATE_MODE = strict" in config_path.read_text(encoding="utf-8")

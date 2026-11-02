@@ -15,10 +15,7 @@ RIGHTS_BASIS_LABELS = {
     "permission": "إذن موثق من صاحب الحقوق",
     "public_domain": "ملكية عامة موثقة",
 }
-DEFAULT_OPERATOR_RIGHTS_STATEMENT = (
-    "أقر بأنني أملك كامل حقوق إعادة نشر كل فيديو أختاره من صفحات Facebook المصدر إلى قناة YouTube الخاصة بي، "
-    "وأتحمل مسؤولية دقة هذا الإقرار."
-)
+DEFAULT_OPERATOR_RIGHTS_STATEMENT = ""
 
 
 def new_rights_record(
@@ -107,19 +104,8 @@ def build_operator_rights_record(
 
 
 def migrate_legacy_rights_gate_config(config):
-    if not config.has_section("STUDIO"):
-        return False
-    marker = config.get("STUDIO", "RIGHTS_GATE_MIGRATION", fallback="").strip()
-    if marker == "operator-confirmed-v2":
-        return False
-    mode = config.get("STUDIO", "RIGHTS_GATE_MODE", fallback="").strip().lower()
-    if mode != "strict":
-        return False
-    config.set("STUDIO", "RIGHTS_GATE_MODE", "operator_confirmed")
-    config.set("STUDIO", "RIGHTS_OPERATOR_BASIS", "owned")
-    config.set("STUDIO", "RIGHTS_OPERATOR_STATEMENT", DEFAULT_OPERATOR_RIGHTS_STATEMENT)
-    config.set("STUDIO", "RIGHTS_GATE_MIGRATION", "operator-confirmed-v2")
-    return True
+    """Do not infer rights consent or rewrite saved rights-gate choices."""
+    return False
 
 
 def validate_automatic_rights_settings(settings):

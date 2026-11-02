@@ -337,13 +337,13 @@ def _error_summaries(root: Path):
 
 def _rights_settings(config):
     return {
-        "rights_gate_mode": _cfg(config, "STUDIO", "RIGHTS_GATE_MODE", "operator_confirmed"),
+        "rights_gate_mode": _cfg(config, "STUDIO", "RIGHTS_GATE_MODE", "strict"),
         "rights_operator_basis": _cfg(config, "STUDIO", "RIGHTS_OPERATOR_BASIS", "owned"),
         "rights_operator_statement": _cfg(
             config, "STUDIO", "RIGHTS_OPERATOR_STATEMENT", DEFAULT_OPERATOR_RIGHTS_STATEMENT
         ),
         "rights_operator_evidence": _cfg(config, "STUDIO", "RIGHTS_OPERATOR_EVIDENCE", ""),
-        "review_before_upload": _cfg_bool(config, "STUDIO", "REVIEW_BEFORE_UPLOAD", False),
+        "review_before_upload": _cfg_bool(config, "STUDIO", "REVIEW_BEFORE_UPLOAD", True),
         "dry_run": _cfg_bool(config, "SETTINGS", "DRY_RUN", False),
     }
 

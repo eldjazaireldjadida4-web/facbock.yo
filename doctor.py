@@ -227,7 +227,7 @@ else:
 
 # 8.5) بوابة الحقوق (وضع الإقرار المحفوظ)
 if os.path.exists("config.ini"):
-    _gate_mode = str(_config_value("STUDIO", "RIGHTS_GATE_MODE", "operator_confirmed")).strip().lower()
+    _gate_mode = str(_config_value("STUDIO", "RIGHTS_GATE_MODE", "strict")).strip().lower()
     _gate_settings = {
         "rights_gate_mode": _gate_mode,
         "rights_operator_basis": _config_value("STUDIO", "RIGHTS_OPERATOR_BASIS", "owned"),
@@ -235,7 +235,7 @@ if os.path.exists("config.ini"):
             "STUDIO", "RIGHTS_OPERATOR_STATEMENT", DEFAULT_OPERATOR_RIGHTS_STATEMENT
         ),
         "rights_operator_evidence": _config_value("STUDIO", "RIGHTS_OPERATOR_EVIDENCE", ""),
-        "review_before_upload": _config_boolean("STUDIO", "REVIEW_BEFORE_UPLOAD", False),
+        "review_before_upload": _config_boolean("STUDIO", "REVIEW_BEFORE_UPLOAD", True),
         "dry_run": _config_boolean("SETTINGS", "DRY_RUN", False),
     }
     _gate_problems = validate_automatic_rights_settings(_gate_settings)

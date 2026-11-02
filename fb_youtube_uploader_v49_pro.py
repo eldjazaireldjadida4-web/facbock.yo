@@ -5180,7 +5180,7 @@ class App:
         sec(pad, "صورة مصغرة ونسخة قصيرة", "")
         c2b = mk_card(pad); c2b.pack(fill="x", pady=(0, 10))
         inn2b = tk.Frame(c2b, bg=CARD, padx=14, pady=12); inn2b.pack(fill="x")
-        self.review_before_upload_var = tk.BooleanVar(value=False)
+        self.review_before_upload_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(inn2b, text="معاينة وموافقة يدوية قبل كل رفع (العنوان، الوصف، الخصوصية والصورة المصغرة)",
                         variable=self.review_before_upload_var).pack(anchor="w", pady=2)
         self.rights_auto_draft_var = tk.BooleanVar(value=True)
@@ -5189,7 +5189,7 @@ class App:
         gate_row = tk.Frame(inn2b, bg=CARD); gate_row.pack(fill="x", pady=(6, 2))
         tk.Label(gate_row, text="بوابة الحقوق:", bg=CARD, fg=TXT,
                  width=13, anchor="e").pack(side="left")
-        self.rights_gate_var = tk.StringVar(value="operator_confirmed")
+        self.rights_gate_var = tk.StringVar(value="strict")
         ttk.Combobox(gate_row, textvariable=self.rights_gate_var, state="readonly",
                      width=22, values=("strict", "operator_confirmed")).pack(side="left", padx=8)
         tk.Label(gate_row, text="أساس الحقوق:", bg=CARD, fg=TXT,
@@ -6436,7 +6436,7 @@ class App:
         if gate_mode == "operator_confirmed":
             self._log("بوابة الحقوق: إقرار المشغل مفعّل — الرفع الآلي مستمر.")
         else:
-            self._log("بوابة الحقوق: strict — لن يُرفع شيء آلياً حتى تختار «operator_confirmed» في «بوابة الحقوق» (قسم حقوق النشر) أو تضبط RIGHTS_GATE_MODE=operator_confirmed في config.ini.")
+            self._log("بوابة الحقوق: strict — لا يُستخدم إقرار عام؛ يلزم سجل حقوق صالح خاص بهذا الفيديو أو استكمال المراجعة اليدوية قبل رفعه.")
 
         channel_videos = []
         channel_index_warning = ""
@@ -7492,10 +7492,10 @@ UI_KEYS = [
     ("STUDIO", "LOGO_SECONDARY", "false"),
     ("STUDIO", "LOGO_SECONDARY_COVER_OLD", "true"),
     ("STUDIO", "PLAYLIST_ID", ""),
-    ("STUDIO", "REVIEW_BEFORE_UPLOAD", "false"),
+    ("STUDIO", "REVIEW_BEFORE_UPLOAD", "true"),
     ("STUDIO", "RIGHTS_AUTO_DRAFT", "true"),
-    ("STUDIO", "RIGHTS_GATE_MODE", "operator_confirmed"),
-    ("STUDIO", "RIGHTS_GATE_MIGRATION", "operator-confirmed-v2"),
+    ("STUDIO", "RIGHTS_GATE_MODE", "strict"),
+    ("STUDIO", "RIGHTS_GATE_MIGRATION", "strict-default-v3"),
     ("STUDIO", "RIGHTS_OPERATOR_BASIS", "owned"),
     ("STUDIO", "RIGHTS_OPERATOR_STATEMENT", DEFAULT_OPERATOR_RIGHTS_STATEMENT),
     ("STUDIO", "RIGHTS_OPERATOR_EVIDENCE", ""),
@@ -7691,7 +7691,7 @@ def build_cli_settings(cfg=None):
         "playlist_id": g("STUDIO", "PLAYLIST_ID", ""),
         "review_before_upload": False,
         "rights_auto_draft": gb("STUDIO", "RIGHTS_AUTO_DRAFT", True),
-        "rights_gate_mode": (g("STUDIO", "RIGHTS_GATE_MODE", "operator_confirmed").strip() or "operator_confirmed").lower(),
+        "rights_gate_mode": (g("STUDIO", "RIGHTS_GATE_MODE", "strict").strip() or "strict").lower(),
         "rights_operator_basis": g("STUDIO", "RIGHTS_OPERATOR_BASIS", "owned").strip().lower(),
         "rights_operator_statement": g("STUDIO", "RIGHTS_OPERATOR_STATEMENT", DEFAULT_OPERATOR_RIGHTS_STATEMENT).strip(),
         "rights_operator_evidence": g("STUDIO", "RIGHTS_OPERATOR_EVIDENCE", "").strip(),

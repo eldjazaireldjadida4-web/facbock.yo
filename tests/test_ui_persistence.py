@@ -22,9 +22,9 @@ def test_ui_defaults_cover_all_keys():
     assert vals[("WATCH", "INTERVAL_MINUTES")] == "10"
     assert vals[("AI", "MODEL")] == pro.GEMINI_MODELS[0]
     assert vals[("STUDIO", "CATEGORY")] == "25"
-    assert vals[("STUDIO", "REVIEW_BEFORE_UPLOAD")] == "false"
-    assert vals[("STUDIO", "RIGHTS_GATE_MODE")] == "operator_confirmed"
-    assert vals[("STUDIO", "RIGHTS_OPERATOR_STATEMENT")] == pro.DEFAULT_OPERATOR_RIGHTS_STATEMENT
+    assert vals[("STUDIO", "REVIEW_BEFORE_UPLOAD")] == "true"
+    assert vals[("STUDIO", "RIGHTS_GATE_MODE")] == "strict"
+    assert vals[("STUDIO", "RIGHTS_OPERATOR_STATEMENT")] == ""
     assert vals[("STUDIO", "OMIT_SOURCE_PAGE_NAME_FROM_TITLE")] == "true"
     assert vals[("SETTINGS", "DRY_RUN")] == "false"
     assert vals[("SAFETY", "ENABLED")] == "false"

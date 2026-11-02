@@ -322,49 +322,62 @@ def test_cli_settings_expose_rights_gate_keys():
     assert settings["rights_operator_evidence"] == ""
 
 
-def test_cli_settings_default_to_confirmed_owned_rights():
+def test_cli_settings_default_to_strict_without_operator_attestation():
     cfg = configparser.ConfigParser()
     cfg.read_dict({"STUDIO": {}})
     settings = app.build_cli_settings(cfg)
-    assert settings["rights_gate_mode"] == "operator_confirmed"
+    assert settings["rights_gate_mode"] == "strict"
     assert settings["rights_operator_basis"] == "owned"
-    assert settings["rights_operator_statement"] == DEFAULT_OPERATOR_RIGHTS_STATEMENT
+    assert settings["rights_operator_statement"] == ""
+    assert DEFAULT_OPERATOR_RIGHTS_STATEMENT == ""
 
 
-def test_packaged_configuration_defaults_to_automatic_owned_rights():
+def test_operator_confirmed_requires_a_nonblank_truthful_statement():
+    settings = {
+        "rights_gate_mode": "operator_confirmed",
+        "rights_operator_basis": "owned",
+        "rights_operator_statement": "",
+        "rights_operator_evidence": "",
+        "review_before_upload": False,
+        "dry_run": False,
+    }
+    assert app.automatic_rights_preflight_errors(settings)
+
+
+def test_packaged_configuration_defaults_to_strict_with_manual_review():
     cfg = configparser.ConfigParser()
     assert cfg.read(PROJECT / "config.ini.example", encoding="utf-8")
-    assert cfg.get("STUDIO", "RIGHTS_GATE_MODE") == "operator_confirmed"
+    assert cfg.get("STUDIO", "RIGHTS_GATE_MODE") == "strict"
     assert cfg.get("STUDIO", "RIGHTS_OPERATOR_BASIS") == "owned"
-    assert cfg.get("STUDIO", "RIGHTS_OPERATOR_STATEMENT").strip() == DEFAULT_OPERATOR_RIGHTS_STATEMENT
-    assert cfg.get("STUDIO", "RIGHTS_GATE_MIGRATION") == "operator-confirmed-v2"
-    assert cfg.getboolean("STUDIO", "REVIEW_BEFORE_UPLOAD") is False
+    assert cfg.get("STUDIO", "RIGHTS_OPERATOR_STATEMENT").strip() == ""
+    assert cfg.get("STUDIO", "RIGHTS_GATE_MIGRATION") == "strict-default-v3"
+    assert cfg.getboolean("STUDIO", "REVIEW_BEFORE_UPLOAD") is True
 
 
-def test_legacy_strict_mode_migrates_even_with_an_old_statement_once(tmp_path):
+def test_legacy_strict_mode_is_not_promoted_or_rewritten(tmp_path):
     config_path = tmp_path / "config.ini"
-    config_path.write_text(
+    original = (
         "[STUDIO]\nRIGHTS_GATE_MODE = strict\nRIGHTS_OPERATOR_BASIS = permission\n"
-        f"RIGHTS_OPERATOR_STATEMENT = {STATEMENT}\nRIGHTS_OPERATOR_EVIDENCE =\n",
-        encoding="utf-8",
+        f"RIGHTS_OPERATOR_STATEMENT = {STATEMENT}\nRIGHTS_OPERATOR_EVIDENCE =\n"
     )
+    config_path.write_text(original, encoding="utf-8")
 
     values = app.load_ui_values(str(config_path))
 
-    assert values[("STUDIO", "RIGHTS_GATE_MODE")] == "operator_confirmed"
-    assert values[("STUDIO", "RIGHTS_OPERATOR_BASIS")] == "owned"
-    assert values[("STUDIO", "RIGHTS_OPERATOR_STATEMENT")] == DEFAULT_OPERATOR_RIGHTS_STATEMENT
-    reloaded = configparser.ConfigParser(interpolation=None)
-    reloaded.read(config_path, encoding="utf-8")
-    assert reloaded.get("STUDIO", "RIGHTS_GATE_MIGRATION") == "operator-confirmed-v2"
+    assert values[("STUDIO", "RIGHTS_GATE_MODE")] == "strict"
+    assert values[("STUDIO", "RIGHTS_OPERATOR_BASIS")] == "permission"
+    assert values[("STUDIO", "RIGHTS_OPERATOR_STATEMENT")] == STATEMENT
+    assert values[("STUDIO", "REVIEW_BEFORE_UPLOAD")] == "true"
+    assert config_path.read_text(encoding="utf-8") == original
 
 
-def test_explicit_strict_mode_after_migration_is_preserved():
+def test_explicit_strict_mode_is_preserved():
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read_dict({"STUDIO": {"RIGHTS_GATE_MODE": "strict", "RIGHTS_GATE_MIGRATION": "operator-confirmed-v2"}})
 
     assert migrate_legacy_rights_gate_config(cfg) is False
     assert cfg.get("STUDIO", "RIGHTS_GATE_MODE") == "strict"
+    assert cfg.get("STUDIO", "RIGHTS_GATE_MIGRATION") == "operator-confirmed-v2"
 
 
 def test_attested_auto_mode_releases_only_rights_held_queue_items():
@@ -376,7 +389,7 @@ def test_attested_auto_mode_releases_only_rights_held_queue_items():
     settings = {
         "rights_gate_mode": "operator_confirmed",
         "rights_operator_basis": "owned",
-        "rights_operator_statement": DEFAULT_OPERATOR_RIGHTS_STATEMENT,
+        "rights_operator_statement": STATEMENT,
         "rights_operator_evidence": "",
         "review_before_upload": False,
         "dry_run": False,

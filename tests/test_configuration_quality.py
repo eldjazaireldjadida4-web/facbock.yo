@@ -23,6 +23,9 @@ def test_example_configuration_parses_without_inline_comment_values():
     assert cfg.getboolean("SAFETY", "ALLOW_PUBLIC_AUTOMATION") is False
     assert cfg.getboolean("STUDIO", "OMIT_SOURCE_PAGE_NAME_FROM_TITLE") is True
     assert cfg.get("SAFETY", "CUTTER_ROOT") == ""
+    assert cfg.get("STUDIO", "RIGHTS_GATE_MODE") == "strict"
+    assert cfg.getboolean("STUDIO", "REVIEW_BEFORE_UPLOAD") is True
+    assert cfg.get("STUDIO", "RIGHTS_OPERATOR_STATEMENT").strip() == ""
 
 
 def test_runtime_ledgers_and_default_directories_are_app_relative():

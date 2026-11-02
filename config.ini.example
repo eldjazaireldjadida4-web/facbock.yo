@@ -58,14 +58,13 @@ DEDUPE_CONTENT = true
 RIGHTS_MANIFEST_FILE = rights_manifest.json
 # إنشاء مسودة توثيق غير معتمدة للتحويلات؛ لا تثبت الملكية أو الإذن.
 RIGHTS_AUTO_DRAFT = true
-# الوضع الافتراضي يطبق إقرار المشغل أدناه بعد تأكيدك في المحادثة بامتلاك حقوق إعادة النشر.
-# اختر strict لإيقاف الرفع الآلي، أو فعّل المراجعة اليدوية لكل فيديو.
-RIGHTS_GATE_MODE = operator_confirmed
-RIGHTS_GATE_MIGRATION = operator-confirmed-v2
-# أساس الحقوق المقر به: owned / licensed / permission / public_domain
+# الوضع الآمن الافتراضي: مراجعة وموافقة صريحة قبل كل رفع؛ لا تُفترض الملكية.
+RIGHTS_GATE_MODE = strict
+RIGHTS_GATE_MIGRATION = strict-default-v3
+# أساس الحقوق عند إعداد إقرار صريح: owned / licensed / permission / public_domain
 RIGHTS_OPERATOR_BASIS = owned
-# أقرّ المشغل بامتلاك حقوق إعادة نشر المقاطع المختارة من صفحات المصدر المحددة.
-RIGHTS_OPERATOR_STATEMENT = أقر بأنني أملك كامل حقوق إعادة نشر كل فيديو أختاره من صفحات Facebook المصدر إلى قناة YouTube الخاصة بي، وأتحمل مسؤولية دقة هذا الإقرار.
+# لا تضع إقراراً إلا إذا كان صحيحاً وينطبق على المواد المحددة.
+RIGHTS_OPERATOR_STATEMENT =
 # مرجع إثبات إلزامي فقط مع الأسس: licensed / permission / public_domain
 RIGHTS_OPERATOR_EVIDENCE =
 CREDIT_LINE =
@@ -92,7 +91,7 @@ LOGO_SECONDARY_COVER_OLD = true
 PLAYLIST_ID =
 
 # معاينة وموافقة يدوية قبل كل رفع (true/false).
-REVIEW_BEFORE_UPLOAD = false
+REVIEW_BEFORE_UPLOAD = true
 
 # صورة مصغرة تلقائية من الفيديو مع العنوان (thumbnails.set = 50 وحدة/رفع، تتطلب قناة موثّقة).
 THUMBNAIL_ENABLED = true
