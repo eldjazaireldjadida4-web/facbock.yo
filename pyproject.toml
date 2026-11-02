@@ -19,7 +19,7 @@ ignore = ["E501"]
 
 [tool.coverage.run]
 branch = true
-source = ["ai_client", "content_safety", "content_review_bridge", "control_plane", "facebook_auth", "facebook_preflight", "diagnostic_report", "facebook_scraper", "dependency_check"]
+source = ["ai_client", "content_safety", "content_review_bridge", "control_plane", "facebook_auth", "facebook_preflight", "diagnostic_report", "facebook_scraper", "dependency_check", "notify"]
 
 [tool.coverage.report]
 show_missing = true
