@@ -720,3 +720,32 @@ def test_cut_shorts_clip_real_ffmpeg(tmp_path):
 def test_generate_thumbnail_without_ffmpeg(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "ffmpeg_available", lambda: False)
     assert app.generate_thumbnail(str(tmp_path / "x.mp4"), "عنوان") is None
+
+
+def test_gemini_call_sends_key_in_header_not_url(monkeypatch):
+    captured = {}
+
+    class FakeGeminiResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "candidates": [{"content": {"parts": [{"text": "تم"}]}}],
+            }).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return FakeGeminiResp()
+
+    monkeypatch.setattr(app.urllib.request, "urlopen", fake_urlopen)
+    result = app._gemini_call("اختبر", "secret-key-123", "gemini-2.5-flash")
+
+    assert result == "تم"
+    assert "secret-key-123" not in captured["url"]
+    assert "key=" not in captured["url"]
+    assert captured["headers"]["x-goog-api-key"] == "secret-key-123"

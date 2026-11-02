@@ -914,14 +914,15 @@ def ai_mark_exhausted(keys, index, reason=""):
 def _gemini_call(prompt, api_key, model, timeout=45, max_tokens=700):
     """نداء REST مباشر لـ Gemini بدون مكتبات إضافية."""
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{model}:generateContent?key={api_key}")
+           f"{model}:generateContent")
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": max_tokens,
                              "responseMimeType": "application/json"},
     }).encode("utf-8")
     req = urllib.request.Request(url, data=body,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "x-goog-api-key": api_key})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts") or []
