@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+python=".venv/bin/python"
+if [ ! -x "$python" ]; then
+  printf '%s\n' "شغّل ./setup.sh أولاً."
+  exit 2
+fi
+exec "$python" fb_youtube_uploader_v49_pro.py "$@"

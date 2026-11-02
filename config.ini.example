@@ -1,0 +1,135 @@
+[SETTINGS]
+# تُفسّر المسارات النسبية في هذا الملف نسبةً إلى مجلد التطبيق، لا مجلد الطرفية.
+# مجلد حفظ ملفات الفيديو المؤقتة؛ يفضّل مساراً يحتوي مساحة كافية.
+VIDEO_DIRECTORY = videos/
+# المسار إلى ملف OAuth Client Secrets الذي أنشأته في Google Cloud.
+CLIENT_SECRETS_FILE = client_secrets.json
+# الحساب النشط (يُدار من الواجهة أيضاً).
+ACCOUNT = account1
+# خصوصية الرفع: public / private / unlisted (الجديد خاصّ حتى تغييره يدوياً).
+PRIVACY = private
+HEADLESS = true
+DELETE_AFTER_UPLOAD = true
+REMOVE_TAGS = false
+BETWEEN_VIDEOS = 10
+# حد طلبات videos.insert اليومية للمشروع؛ يحتسب كل محاولة رفع جديدة. الافتراضي الحالي 100/يوم.
+DAILY_UPLOAD_LIMIT = 100
+MAX_ATTEMPTS = 3
+# تقليم عناصر الفشل الأقدم من هذا العمر (بالأيام)؛ 0 يعطّل التقليم.
+FAILED_MAX_AGE_DAYS = 14
+MIN_DISK_GB = 2
+# وضع تجربة: يوقف الرفع إلى YouTube ولا يحتسب طلب الرفع.
+DRY_RUN = false
+
+[WATCH]
+# بدء المراقبة تلقائياً عند فتح البرنامج (الواجهة تحفظه أيضاً).
+AUTO_START = false
+# فاصل الفحص بالدقائق (يُستخدم في الواجهة و--cli).
+INTERVAL_MINUTES = 10
+FAST_SCRAPE = true
+# اختبر الوصول إلى فيسبوك قبل فتح Chrome؛ يتخطى الدورة سريعاً عند انقطاع الشبكة.
+NETWORK_PREFLIGHT = true
+# التنزيل: الحد الفعلي 30 ثانية و3 محاولات كحد أقصى، حتى لو بقي إعداد قديم أكبر.
+DOWNLOAD_SOCKET_TIMEOUT = 30
+DOWNLOAD_RETRIES = 3
+# السحب السريع: الحد الفعلي 20 ثانية و3 محاولات كحد أقصى.
+SCRAPE_SOCKET_TIMEOUT = 15
+SCRAPE_RETRIES = 2
+# مهلة Chrome لا تتجاوز 30 ثانية؛ وبعد انتهاء المهلة يُفحص المحتوى مرة واحدة فقط.
+PAGE_LOAD_TIMEOUT = 25
+# وكيل اختياري؛ يُستخدم مع yt-dlp وChrome (مثال socks5://127.0.0.1:1080). لا تضع اسم مستخدم أو كلمة مرور هنا.
+PROXY =
+# تفضيل IPv4 أولاً؛ يتحول التطبيق تلقائياً إلى IPv6 إذا تعذر IPv4 (true/false)
+FORCE_IPV4 = true
+# مهلة كل مسار (10–15 ثانية)؛ القيم القديمة الأقل من 10 تُرفع تلقائياً لمنع الانقطاع المتذبذب.
+NETWORK_PREFLIGHT_TIMEOUT = 12
+
+[STUDIO]
+# تُدار كل هذه القيم من الواجهة وتُحفظ هنا تلقائياً؛
+# وضع --cli يقرأها من هنا مباشرة.
+TITLE_PREFIX =
+TITLE_SUFFIX =
+CATEGORY = 25
+TITLE_OPTIMIZE = true
+OMIT_SOURCE_PAGE_NAME_FROM_TITLE = true
+AUTO_SHORTS = true
+AUTO_HASHTAGS = true
+DEDUPE_CONTENT = true
+RIGHTS_MANIFEST_FILE = rights_manifest.json
+# إنشاء مسودة توثيق غير معتمدة للتحويلات؛ لا تثبت الملكية أو الإذن.
+RIGHTS_AUTO_DRAFT = true
+# الوضع الافتراضي يطبق إقرار المشغل أدناه بعد تأكيدك في المحادثة بامتلاك حقوق إعادة النشر.
+# اختر strict لإيقاف الرفع الآلي، أو فعّل المراجعة اليدوية لكل فيديو.
+RIGHTS_GATE_MODE = operator_confirmed
+RIGHTS_GATE_MIGRATION = operator-confirmed-v2
+# أساس الحقوق المقر به: owned / licensed / permission / public_domain
+RIGHTS_OPERATOR_BASIS = owned
+# أقرّ المشغل بامتلاك حقوق إعادة نشر المقاطع المختارة من صفحات المصدر المحددة.
+RIGHTS_OPERATOR_STATEMENT = أقر بأنني أملك كامل حقوق إعادة نشر كل فيديو أختاره من صفحات Facebook المصدر إلى قناة YouTube الخاصة بي، وأتحمل مسؤولية دقة هذا الإقرار.
+# مرجع إثبات إلزامي فقط مع الأسس: licensed / permission / public_domain
+RIGHTS_OPERATOR_EVIDENCE =
+CREDIT_LINE =
+EXTRA_DESCRIPTION =
+TAGS = Facebook,Reel,Shorts
+# قيم افتراضية لنموذج إضافة صفحة
+PG_SCROLL = 5
+PG_LIMIT = 30
+
+# الشعار (يتطلب ffmpeg)
+LOGO_ENABLED = false
+LOGO_PATH = logo.png
+LOGO_POSITION = أعلى اليمين
+LOGO_SCALE = 8
+LOGO_OPACITY = 100
+LOGO_COVER_WIDTH = 20
+LOGO_COVER_OLD = true
+LOGO_PLATE = false
+# علامة شعار ثانوية صغيرة في الركن المقابل (اختيارية).
+LOGO_SECONDARY = false
+LOGO_SECONDARY_COVER_OLD = true
+
+# قائمة تشغيل افتراضية (ID) لكل الرفع؛ يمكن لكل صفحة تجاوزها بمفتاح playlist في pages.json.
+PLAYLIST_ID =
+
+# معاينة وموافقة يدوية قبل كل رفع (true/false).
+REVIEW_BEFORE_UPLOAD = false
+
+# صورة مصغرة تلقائية من الفيديو مع العنوان (thumbnails.set = 50 وحدة/رفع، تتطلب قناة موثّقة).
+THUMBNAIL_ENABLED = true
+
+# قص المشهد الأعلى صوتاً كنسخة Shorts إضافية (للمقاطع 95 ثانية وأكثر).
+SHORTS_CUT = false
+
+# الجدولة الذكية
+SCHEDULE = false
+SCHEDULE_MIN = 20
+SCHEDULE_MAX = 60
+
+# فلاتر المدة
+MIN_DURATION = 0
+MAX_DURATION = 0
+
+# كوكيز Facebook — صدّرها من جلسة مسجّلة؛ قد تنتهي صلاحيتها وتتطلب تصديراً جديداً.
+# الملف سري ولا تشاركه. لا تُستخدم إلا عند تفعيل الخيار صراحةً.
+COOKIES_FILE = cookies.txt
+COOKIES_ENABLED = false
+
+# Telegram (اختياري): إذا وضعت التوكن والمحادثة تُفعّل الإشعارات.
+TELEGRAM_TOKEN =
+TELEGRAM_CHAT_ID =
+TELEGRAM_ERRORS = true
+
+[AI]
+# التحسين بالذكاء الاصطناعي — المفاتيح في ai_keys.json (أضفها من تبويب ).
+ENABLED = false
+MODEL = gemini-2.5-flash
+STYLE = احترافي متوازن
+
+[SAFETY]
+# مراجعة نصية اختيارية عبر أداة OUSSAMA Cutter المحلية. لا تفعّلها قبل مراجعة إعدادات مزوّد AI فيها.
+# عند تفعيلها، أي تقرير مفقود أو غير واضح أو لا يطابق الفيديو والبيانات يمنع الرفع.
+ENABLED = false
+ALLOW_PUBLIC_AUTOMATION = false
+CUTTER_ROOT =
+# اتركه فارغاً لاستخدام بيئة Cutter الافتراضية أو Python الجاري.
+CUTTER_PYTHON =

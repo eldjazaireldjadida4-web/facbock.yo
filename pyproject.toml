@@ -1,0 +1,27 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"
+timeout = 120
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = ["tests/fixtures/versions", "__pycache__", ".venv", ".pytest_cache"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"fb_youtube_uploader_v49_pro.py" = ["E401", "E402", "E702", "E731"]
+"tests/test_*.py" = ["E702", "E741"]
+
+[tool.coverage.run]
+branch = true
+source = ["content_safety", "content_review_bridge", "control_plane", "facebook_auth", "facebook_preflight", "diagnostic_report"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 70

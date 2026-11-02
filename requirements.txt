@@ -1,0 +1,10 @@
+yt-dlp>=2025.1.15
+selenium>=4.20.0
+google-api-python-client>=2.130.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+Pillow>=10.0.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.6.6
+fonttools>=4.40.0
+portalocker>=4.4.1
