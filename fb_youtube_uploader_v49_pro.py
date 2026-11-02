@@ -196,6 +196,7 @@ DEFAULT_PAGES = [
 
 os.makedirs(VIDEO_DIRECTORY, exist_ok=True)
 
+import ai_client
 from logging.handlers import RotatingFileHandler
 # لا نكتب ملف errors.log عند تشغيل الاختبارات حتى لا يمتلئ بسجلات وهمية.
 if "pytest" not in sys.modules:
@@ -872,123 +873,32 @@ class QuotaManager:
 # GEMINI AI — تحسين المحتوى بالذكاء الاصطناعي مع تدوير المفاتيح
 # ════════════════════════════════════════════════════
 AI_KEYS_FILE = _app_path("ai_keys.json")
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-AI_STYLES = {
-    "احترافي متوازن": "اكتب بأسلوب احترافي متوازن: واضح، جذاب، وصادق بدون مبالغة.",
-    "جذاب (Clickbait معتدل)": "اكتب بأسلوب جذاب يثير الفضول لكن بدون كذب أو وعود كاذبة — العنوان يجب أن يطابق المحتوى.",
-    "إخباري رسمي": "اكتب بأسلوب إخباري رسمي موجز كما في النشرات، مع أهم المعلومات أولاً.",
-    "رياضي حماسي": "اكتب بأسلوب رياضي حماسي مشوّق يليق بعشاق الرياضة.",
-}
+# ════════════════════════════════════════════════════
+# AI — Gemini (منطق العميل معزول في ai_client.py)
+# ════════════════════════════════════════════════════
+from ai_client import (AI_STYLES, GEMINI_MODELS, _extract_json, _iso_in_past,
+                       ai_ping_key)
 
 def load_ai_keys():
     """كل عنصر: {key, exhausted_until (ISO أو ''), last_error}."""
-    keys = _read_json(AI_KEYS_FILE, [])
-    return keys if isinstance(keys, list) else []
+    return ai_client.load_ai_keys(AI_KEYS_FILE, _read_json)
 
 def save_ai_keys(keys):
-    _write_json(AI_KEYS_FILE, keys)
-    _harden_secret_file(AI_KEYS_FILE)
-
-def _iso_in_past(iso_text):
-    if not iso_text:
-        return True
-    try:
-        return datetime.fromisoformat(iso_text) <= datetime.now()
-    except ValueError:
-        return True
-
-def ai_available_key(keys):
-    """أول مفتاح غير مستنفد؛ يعيد (الفهرس، المفتاح) أو (None, None)."""
-    for i, entry in enumerate(keys):
-        if entry.get("key") and _iso_in_past(entry.get("exhausted_until", "")):
-            return i, entry["key"]
-    return None, None
+    ai_client.save_ai_keys(keys, AI_KEYS_FILE, _write_json,
+                           harden=_harden_secret_file)
 
 def ai_mark_exhausted(keys, index, reason=""):
-    """يعلّم المفتاح كمستنفد حتى منتصف الليل القادم (تتجدد حصة Gemini اليومية)."""
-    nxt = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
-    keys[index]["exhausted_until"] = nxt.isoformat(timespec="seconds")
-    keys[index]["last_error"] = reason[:200]
-    save_ai_keys(keys)
-
-def _gemini_call(prompt, api_key, model, timeout=45, max_tokens=700):
-    """نداء REST مباشر لـ Gemini بدون مكتبات إضافية."""
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{model}:generateContent")
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": max_tokens,
-                             "responseMimeType": "application/json"},
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=body,
-                                 headers={"Content-Type": "application/json",
-                                          "x-goog-api-key": api_key})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts") or []
-    return "".join(p.get("text", "") for p in parts).strip()
+    ai_client.ai_mark_exhausted(keys, index, reason, AI_KEYS_FILE, _write_json,
+                                harden=_harden_secret_file)
 
 def gemini_generate(prompt, model, log_cb=None, max_tokens=700):
     """يولّد نصاً عبر Gemini مع تدوير المفاتيح تلقائياً عند نفاد الحصة.
 
     يعيد (النص، المفاتيح المحدّثة) أو (None، المفاتيح) إذا استُنفدت كلها.
     """
-    keys = load_ai_keys()
-    if not keys:
-        if log_cb:
-            log_cb("لا توجد مفاتيح Gemini — أضفها من تبويب الذكاء الاصطناعي")
-        return None, keys
-    while True:
-        idx, key = ai_available_key(keys)
-        if key is None:
-            if log_cb:
-                log_cb("كل مفاتيح Gemini مستنفدة اليوم — سأستخدم التحسين العادي")
-            return None, keys
-        try:
-            return _gemini_call(prompt, key, model, max_tokens=max_tokens), keys
-        except urllib.error.HTTPError as e:
-            body = ""
-            try:
-                body = e.read().decode("utf-8", "ignore")[:300]
-            except Exception:
-                pass
-            invalid = e.code in (400, 401) or (e.code == 403 and "API_KEY_INVALID" in body)
-            if invalid:
-                ai_mark_exhausted(keys, idx, f"مفتاح غير صالح (HTTP {e.code})")
-                if log_cb:
-                    log_cb(f"مفتاح Gemini #{idx+1} غير صالح — عطّلته. راجعه في aistudio.google.com")
-                continue
-            if e.code in (403, 429):
-                ai_mark_exhausted(keys, idx, f"نفاد الحصة (HTTP {e.code})")
-                if log_cb:
-                    log_cb(f"نفدت حصة مفتاح Gemini #{idx+1} — الانتقال للتالي…")
-                continue
-            keys[idx]["last_error"] = f"HTTP {e.code}: {body[:120]}"
-            save_ai_keys(keys)
-            if log_cb:
-                log_cb(f"خطأ Gemini HTTP {e.code} للمفتاح #{idx+1} — تجربة التالي…")
-            ai_mark_exhausted(keys, idx, f"HTTP {e.code}")
-        except Exception as e:
-            logging.warning("خطأ شبكة مع مفتاح Gemini #%s: %s", idx + 1, e)
-            keys[idx]["last_error"] = str(e)[:200]
-            save_ai_keys(keys)
-            if log_cb:
-                log_cb(f"تعذر الوصول لمفتاح #{idx+1} ({e}) — تجربة التالي…")
-            # أخطاء الشبكة لا تستنفد المفتاح لكن ننتقل للتالي لهذه المحاولة
-            keys[idx]["exhausted_until"] = (datetime.now() + timedelta(minutes=10)).isoformat(timespec="seconds")
-            save_ai_keys(keys)
-
-def _extract_json(text):
-    """يستخرج أول كائن JSON من رد النموذج حتى لو التفّ بعلامات markdown."""
-    if not text:
-        return None
-    m = re.search(r'\{.*\}', text, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
+    return ai_client.gemini_generate(
+        prompt, model, AI_KEYS_FILE, _read_json, _write_json,
+        log_cb=log_cb, max_tokens=max_tokens, harden=_harden_secret_file)
 
 def ai_generate_metadata(raw_title, raw_desc, page_name, duration, model,
                          style_name, log_cb=None, performance_hint=""):
@@ -1030,16 +940,6 @@ def ai_generate_metadata(raw_title, raw_desc, page_name, duration, model,
         "description": str(data.get("description") or "").strip(),
         "tags": [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else [],
     }
-
-def ai_ping_key(key, model, timeout=30):
-    """اختبار سريع لمفتاح واحد. يعيد (نجاح؟، رسالة)."""
-    try:
-        text = _gemini_call("أجب بكلمة واحدة: تم", key, model, timeout=timeout, max_tokens=16)
-        return (True, "يعمل") if text else (False, "رد فارغ")
-    except urllib.error.HTTPError as e:
-        return False, f"HTTP {e.code}"
-    except Exception as e:
-        return False, f"{e}"
 
 # ════════════════════════════════════════════════════
 # TELEGRAM — إشعارات اختيارية
