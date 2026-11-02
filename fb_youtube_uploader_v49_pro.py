@@ -22,7 +22,7 @@ _check_dependencies()
 import argparse
 import time, os, re, json, logging, random, threading, queue, configparser, shutil, hashlib, unicodedata, math
 import subprocess, sys, tempfile
-from urllib.parse import urlparse, urlunparse, parse_qsl
+from urllib.parse import urlparse, urlunparse
 import glob
 from datetime import datetime, timedelta, timezone
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageStat, features
@@ -214,20 +214,26 @@ from texttools import (AR_STOPWORDS, BIDI_OVERRIDE_CHARS, EDGE_SEPARATORS,
                        sanitize_public_text)
 
 __all__ = [
+    "CHANNEL_LIMIT_REASONS", "FACEBOOK_HOSTS", "NON_RETRYABLE_STATUSES",
+    "QUOTA_REASONS", "RETRYABLE_REASONS", "_http_reason", "_http_status",
+    "_safe_normalize_channel_url", "classify_upload_error",
+    "normalize_channel_url", "order_reels", "reel_id_from_url_any",
     "AR_STOPWORDS", "BIDI_OVERRIDE_CHARS", "EDGE_SEPARATORS",
     "FILLER_PATTERNS", "HASHTAG_RE", "INVALID_TITLE_CHARS", "JUNK_STATS",
     "MENTION_RE", "SYMBOL_RUN_RE", "URL_RE", "YOUTUBE_TAGS_MAX",
     "YOUTUBE_TITLE_MAX", "_arabic_plural", "_clean_title_component",
     "_collapse_symbol_runs", "_compose_title_parts",
-    "_drop_truncated_brand", "_is_unicode_word_char", "_name_variants",
-    "_remove_hashtags", "_truncate_smart", "_truncate_suffix_component",
+    "_drop_truncated_brand", "_http_reason", "_http_status",
+    "_is_unicode_word_char", "_name_variants", "_remove_hashtags",
+    "_safe_normalize_channel_url", "_truncate_smart", "_truncate_suffix_component",
     "_unicode_word_tokens", "_youtube_tag_cost", "build_description",
-    "build_title", "clean_title", "ensure_source_attribution",
-    "extract_hashtags", "normalize_generated_title", "normalize_youtube_tags",
-    "normalize_youtube_title", "optimize_title", "prepare_public_title",
+    "build_title", "classify_upload_error", "clean_title",
+    "ensure_source_attribution", "extract_hashtags", "normalize_channel_url",
+    "normalize_generated_title", "normalize_youtube_tags",
+    "normalize_youtube_title", "optimize_title", "order_reels",
+    "prepare_public_title", "reel_id_from_url_any",
     "sanitize_public_text",
 ]
-FACEBOOK_HOSTS = ("facebook.com", "fb.com")
 from logging.handlers import RotatingFileHandler
 # لا نكتب ملف errors.log عند تشغيل الاختبارات حتى لا يمتلئ بسجلات وهمية.
 if "pytest" not in sys.modules:
@@ -983,113 +989,18 @@ def send_cycle_summary(ctx, settings, stats, log_cb=None):
 # ════════════════════════════════════════════════════
 # HELPERS — CORE LOGIC
 # ════════════════════════════════════════════════════
-def normalize_channel_url(url):
-    """يوحّد رابط الصفحة ليشير إلى تبويب الريلز ويصلح الروابط الشائعة.
-    facebook.com/name → /name/reels | profile.php?id=X → +sk=reels_tab
-    """
-    url = (url or "").strip().strip('"').strip("'").strip()
-    if not url:
-        raise ValueError("رابط الصفحة فارغ")
-    if "://" not in url:
-        url = "https://" + url
-    parts = urlparse(url)
-    host = parts.netloc.lower().split(":")[0]
-    if not any(host == h or host.endswith("." + h) for h in FACEBOOK_HOSTS):
-        raise ValueError(f"ليس رابط فيسبوك: {url}")
-    path, query = parts.path, parts.query
-    segments = [s for s in path.split("/") if s]
-    lowered = {s.lower() for s in segments}
-    if lowered & {"reel", "reels", "videos"} or "sk" in {k.lower() for k, _ in parse_qsl(query)}:
-        return urlunparse(parts)
-    if segments and segments[0].lower() == "profile.php":
-        query = f"{query}&sk=reels_tab" if query else "sk=reels_tab"
-    elif len(segments) == 1:
-        path = f"/{segments[0]}/reels"
-    return urlunparse((parts.scheme, parts.netloc, path, parts.params, query, parts.fragment))
-
-
-def _safe_normalize_channel_url(url):
-    """يوحّد الرابط، ويعيده كما هو إن لم يكن رابط فيسبوك صالحاً (لا يُفشل الدورة)."""
-    try:
-        return normalize_channel_url(url)
-    except ValueError:
-        return url
-
-
-def reel_id_from_url_any(url):
-    return facebook_media_id(url)
-
-
-def order_reels(links, newest_first=True):
-    """يوحّد روابط الفيديو ويزيل التكرار مع الحفاظ على ترتيب ثابت."""
-    unique, seen = [], set()
-    for link in links:
-        canonical_url = canonicalize_facebook_video_url(str(link or ""))
-        if not canonical_url:
-            continue
-        reel_id = reel_id_from_url_any(canonical_url) or canonical_url
-        if reel_id not in seen:
-            seen.add(reel_id)
-            unique.append(canonical_url)
-    if newest_first:
-        def sort_key(url):
-            reel_id = reel_id_from_url_any(url) or ""
-            if reel_id.isdigit():
-                return (0, -int(reel_id))
-            return (1, reel_id.lower())
-        unique.sort(key=sort_key)
-    return unique
-
+# (منطق الروابط معزول في fburls.py، وتصنيف أخطاء الرفع في uploaderrors.py)
+from fburls import (FACEBOOK_HOSTS, _safe_normalize_channel_url,
+                    normalize_channel_url, order_reels, reel_id_from_url_any)
+from uploaderrors import (CHANNEL_LIMIT_REASONS, NON_RETRYABLE_STATUSES,
+                          QUOTA_REASONS, RETRYABLE_REASONS, _http_reason,
+                          _http_status, classify_upload_error)
 
 def sanitize_account_name(name):
     """يمنع تسرب اسم الحساب إلى مسار ملف غير آمن."""
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", (name or "").strip()).strip("._")
     return safe or "account1"
 
-
-def _http_status(error):
-    resp = getattr(error, "resp", None)
-    return getattr(resp, "status", 0) if resp is not None else 0
-
-
-def _http_reason(error):
-    try:
-        content = getattr(error, "content", b"") or b""
-        data = json.loads(content.decode("utf-8", "ignore"))
-        errors = (data.get("error") or {}).get("errors") or []
-        if errors and isinstance(errors[0], dict):
-            return errors[0].get("reason", "") or ""
-    except (ValueError, AttributeError, TypeError):
-        pass
-    return ""
-
-
-RETRYABLE_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "backendError", "internalError"}
-QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded"}
-CHANNEL_LIMIT_REASONS = {"uploadLimitExceeded"}
-NON_RETRYABLE_STATUSES = {400, 401, 404, 409}
-
-
-def classify_upload_error(error):
-    """يصنّف الحصة، حد القناة اليومي، التحديد المؤقت، والصلاحيات بشكل مستقل.
-
-    `uploadLimitExceeded` هو حد رفع للقناة، وليس حصة مشروع API.
-    """
-    status = _http_status(error)
-    reason = _http_reason(error)
-    if reason in CHANNEL_LIMIT_REASONS:
-        return "channel_limit"
-    if reason in QUOTA_REASONS:
-        return "quota"
-    if reason in RETRYABLE_REASONS:
-        return "retryable"
-    if status == 429 or status in (408, 425, 500, 502, 503, 504):
-        return "retryable"
-    if status == 403:
-        return "auth"
-    if status in NON_RETRYABLE_STATUSES:
-        return "fatal"
-    return "retryable"
 
 
 def _backoff_seconds(attempt):
