@@ -613,11 +613,16 @@ def is_duplicate_content(title, threshold=0.90, lookback=600):
     """يقارن العنوان بآخر العناوين التي رفعها هذا المشروع."""
     from difflib import SequenceMatcher
     fingerprint = content_fingerprint(title)
-    if len(fingerprint) < 10:
+    if not fingerprint:
         return False
     state = load_state()
+    exact_only = len(fingerprint) < 10
     for previous in state.get("title_fingerprints", [])[-lookback:]:
-        if fingerprint == previous or SequenceMatcher(None, fingerprint, previous, autojunk=False).ratio() >= threshold:
+        if fingerprint == previous:
+            return True
+        if exact_only:
+            continue
+        if SequenceMatcher(None, fingerprint, previous, autojunk=False).ratio() >= threshold:
             return True
     return False
 
@@ -734,15 +739,19 @@ def find_channel_title_matches(title, duration, channel_videos, threshold=0.90, 
     """يعيد أقرب العناوين في القناة؛ التطابق عنواني ولا يثبت تطابق ملف الفيديو."""
     from difflib import SequenceMatcher
     fingerprint = content_fingerprint(title)
-    if len(fingerprint) < 10:
+    if not fingerprint:
         return []
+    exact_only = len(fingerprint) < 10
     matches = []
     for video in channel_videos or []:
         previous = content_fingerprint(video.get("title", ""))
-        if len(previous) < 10:
+        if not previous:
             continue
         score = SequenceMatcher(None, fingerprint, previous, autojunk=False).ratio()
-        if score < threshold and fingerprint != previous:
+        if exact_only:
+            if fingerprint != previous:
+                continue
+        elif score < threshold and fingerprint != previous:
             continue
         previous_duration = video.get("duration")
         delta = abs(float(duration) - float(previous_duration)) if duration is not None and previous_duration is not None else None
@@ -5661,6 +5670,11 @@ class App:
             self._log(f"استُعيدت {recovered_count} محاولة رفع غير مكتملة وعُلّقت للتحقق اليدوي؛ لن تُعاد تلقائياً منعاً للتكرار.")
         if rights_released_count:
             self._log(f"أُعيدت {rights_released_count} مواد محجوبة سابقاً بالحقوق إلى قائمة المعالجة؛ ستُفحص للتكرار قبل الرفع.")
+        dropped_uploaded = len({str(it.get("id", "")).strip() for it in stored_queue if str(it.get("id", "")).strip()}) - len(
+            {str(it.get("id", "")).strip() for it in recovered_queue if str(it.get("id", "")).strip()}
+        )
+        if dropped_uploaded > 0:
+            self._log(f"تخطّينا {dropped_uploaded} عنصراً من قائمة الإعادة لأنه مسجّل مسبقاً كمرفوع؛ لن يُعاد رفعه.")
         failed_q, held_duplicate_q = split_duplicate_review_queue(
             prune_failed_queue(recovered_queue, settings.get("failed_max_age_days", FAILED_QUEUE_MAX_AGE_DAYS)),
             settings.get("review_before_upload", False)
