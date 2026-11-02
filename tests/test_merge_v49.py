@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import ai_client
 from googleapiclient.errors import HttpError
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "fb_youtube_uploader_v49_pro.py"
@@ -742,8 +743,8 @@ def test_gemini_call_sends_key_in_header_not_url(monkeypatch):
         captured["headers"] = {k.lower(): v for k, v in req.header_items()}
         return FakeGeminiResp()
 
-    monkeypatch.setattr(app.urllib.request, "urlopen", fake_urlopen)
-    result = app._gemini_call("اختبر", "secret-key-123", "gemini-2.5-flash")
+    monkeypatch.setattr(ai_client.urllib.request, "urlopen", fake_urlopen)
+    result = ai_client._gemini_call("اختبر", "secret-key-123", "gemini-2.5-flash")
 
     assert result == "تم"
     assert "secret-key-123" not in captured["url"]
