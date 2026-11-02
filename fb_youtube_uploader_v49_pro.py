@@ -144,6 +144,8 @@ def _app_path(path):
         return os.path.normpath(value)
     return os.path.abspath(os.path.join(APP_DIRECTORY, value))
 
+ERROR_LOG_FILE = _app_path("errors.log")
+
 
 _FACEBOOK_NETWORK_ROUTE: str | None = None
 config = configparser.ConfigParser(interpolation=None)
@@ -197,7 +199,7 @@ os.makedirs(VIDEO_DIRECTORY, exist_ok=True)
 from logging.handlers import RotatingFileHandler
 # لا نكتب ملف errors.log عند تشغيل الاختبارات حتى لا يمتلئ بسجلات وهمية.
 if "pytest" not in sys.modules:
-    _log_handler = RotatingFileHandler("errors.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    _log_handler = RotatingFileHandler(ERROR_LOG_FILE, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
     _log_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(_log_handler)
 logging.getLogger().setLevel(logging.INFO)

@@ -27,8 +27,8 @@ def test_example_configuration_parses_without_inline_comment_values():
 
 def test_runtime_ledgers_and_default_directories_are_app_relative():
     paths = (
-        app.VIDEO_DIRECTORY, app.CLIENT_SECRETS_FILE, app.UPLOADED_IDS_FILE,
-        app.SEEN_IDS_FILE, app.PAGES_FILE, app.ACCOUNTS_FILE, app.STATS_FILE,
+        app.VIDEO_DIRECTORY, app.CLIENT_SECRETS_FILE, app.ERROR_LOG_FILE,
+        app.UPLOADED_IDS_FILE, app.SEEN_IDS_FILE, app.PAGES_FILE, app.ACCOUNTS_FILE, app.STATS_FILE,
         app.PAGE_STATUS_FILE, app.STATE_FILE, app.FAILED_QUEUE_FILE,
         app.HISTORY_FILE, app.CHANNEL_INDEX_FILE, app.RIGHTS_MANIFEST_FILE,
         app.AI_KEYS_FILE,
