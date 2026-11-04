@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.48.0 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.48.1 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -137,7 +137,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.48.0"
+__version__ = "4.48.1"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
