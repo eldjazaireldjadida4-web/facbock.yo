@@ -133,7 +133,7 @@ def test_expired_youtube_token_without_refresh_token_is_reauthorized_safely(
         refresh_token = "refresh-token"
 
         def to_json(self):
-            return json.dumps({"scopes": app.SCOPES, "refresh_token": self.refresh_token})
+            return json.dumps({"scopes": app.SCOPES, "token": "test-access-token", "refresh_token": self.refresh_token})
 
     monkeypatch.setattr(
         app.Credentials,
@@ -281,7 +281,8 @@ def test_cli_oauth_failure_never_opens_a_browser(monkeypatch, tmp_path):
         allow_interactive=False,
     )
     assert youtube is None
-    assert "لا يوجد تفويض YouTube صالح" in error
+    assert "مفقود" in error
+    assert "الإعدادات المتقدمة" in error
 
 @pytest.mark.parametrize(
     ("outcome", "expected_code"),

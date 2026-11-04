@@ -187,7 +187,7 @@ def test_cycle_uses_ai_metadata_and_caches(sandboxed_files, monkeypatch):
     captured = {}
     def fake_upload(yt, vd, privacy, playlist, tags, category, sched, log_cb):
         captured.update(title=vd["title"], desc=vd["desc"], tags=tags)
-        return "YT-AI"
+        return "abcdefghijk"
     monkeypatch.setattr(pro, "upload_video", fake_upload)
     monkeypatch.setattr(pro, "disk_free_gb", lambda: 100.0)
     pro.save_ai_keys([{"key": "K", "exhausted_until": "", "last_error": ""}])

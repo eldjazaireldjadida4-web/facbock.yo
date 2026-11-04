@@ -34,11 +34,35 @@ def test_operator_record_passes_validation_and_is_attested():
         ["إضافة شعار القناة على الفيديو"],
         basis="owned",
         statement=STATEMENT,
-        duplicate_note=STATEMENT,
     )
     assert record["attested"] is True
     assert record["rights_basis"] == "owned"
     assert record["attested_at"]
+    assert rights_record_errors(record, duplicate_detected=False) == []
+
+
+def test_general_operator_attestation_does_not_clear_duplicate_review():
+    record = build_operator_rights_record(
+        "https://example.com/reel/2",
+        [],
+        basis="owned",
+        statement=STATEMENT,
+    )
+
+    errors = rights_record_errors(record, duplicate_detected=True)
+
+    assert any("يختلف هذا الفيديو" in error for error in errors)
+
+
+def test_explicit_video_specific_duplicate_note_clears_review():
+    record = build_operator_rights_record(
+        "https://example.com/reel/2",
+        [],
+        basis="owned",
+        statement=STATEMENT,
+        duplicate_note="يتضمن هذا المقطع مقابلة وتعليقاً أصلياً غير موجودين في الفيديو السابق.",
+    )
+
     assert rights_record_errors(record, duplicate_detected=True) == []
 
 

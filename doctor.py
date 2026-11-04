@@ -107,13 +107,18 @@ def _collect_checks(add_check, config, config_error, app_directory):
                   "ثبّت Google Chrome (Selenium يجلب chromedriver تلقائياً بعدها)")
 
     # 5) ffmpeg / ffprobe
-    for tool in ("ffmpeg", "ffprobe"):
-        path = shutil.which(tool)
-        if path:
-            add_check(tool, OK, path)
-        else:
-            add_check(tool, WARN, "غير موجود",
-                      "نزّله من ffmpeg.org وأضفه إلى PATH (بدونه يتخطى فحص/تحسين المقطع)")
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        add_check("ffmpeg", OK, ffmpeg_path)
+    else:
+        add_check("ffmpeg", WARN, "غير موجود",
+                  "اختياري للتنزيل بصيغة مدمجة؛ ثبّته من ffmpeg.org لميزات الشعار والمعالجة.")
+    ffprobe_path = shutil.which("ffprobe")
+    if ffprobe_path:
+        add_check("ffprobe", OK, ffprobe_path)
+    else:
+        add_check("ffprobe", BAD, "غير موجود؛ لا يمكن التحقق من الفيديو",
+                  "ثبّت حزمة FFmpeg التي تتضمن ffprobe وأضفها إلى PATH؛ لن يُرفع ملف دون فحص.")
 
     # 6) client_secrets.json
     configured_secrets_file = _config_value("SETTINGS", "CLIENT_SECRETS_FILE", "client_secrets.json")

@@ -75,6 +75,15 @@ def test_facebook_auth_block_reason_distinguishes_login_checkpoint_and_recovery(
     assert facebook_auth_block_reason("https://www.facebook.com/recover/") == "recovery"
     assert facebook_auth_block_reason("https://example.com/login/") is None
 
+
+def test_captcha_and_challenge_are_security_holds_not_scrape_successes():
+    assert facebook_auth_block_reason("https://www.facebook.com/challenge/") == "checkpoint"
+    assert facebook_auth_block_reason("https://www.facebook.com/captcha/") == "checkpoint"
+    assert facebook_auth_block_reason(
+        "https://www.facebook.com/page/reels/",
+        '<form id="captcha_form"><input name="captcha"></form>',
+    ) == "checkpoint"
+
 def test_legacy_video_php_urls_are_canonicalized():
     for url in (
         "https://www.facebook.com/video.php?v=1760103355&ref=sharing",

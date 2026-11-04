@@ -43,7 +43,7 @@ def test_explicit_publication_approval_passes_final_guard(tmp_path):
         publication_approved=True,
     )
 
-    assert result is None
+    assert result == app.UPLOAD_NOT_STARTED
 
 
 def test_explicit_automation_opt_in_passes_final_guard(tmp_path):
@@ -58,7 +58,7 @@ def test_explicit_automation_opt_in_passes_final_guard(tmp_path):
         allow_public_automation=True,
     )
 
-    assert result is None
+    assert result == app.UPLOAD_NOT_STARTED
 
 
 def test_cli_requires_explicit_opt_in_for_publication(monkeypatch):

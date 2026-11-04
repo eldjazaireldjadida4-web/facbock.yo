@@ -41,10 +41,12 @@ def facebook_auth_block_reason(current_url: str, page_source: str = "") -> str |
     if not _facebook_host(parts.hostname or ""):
         return None
     path = (parts.path or "").lower()
-    if "/checkpoint" in path:
+    if "/checkpoint" in path or "/challenge" in path or "/captcha" in path:
         return "checkpoint"
     if "/recover" in path:
         return "recovery"
+    if re.search(r"<form[^>]*(?:captcha|challenge|checkpoint)[^>]*>", page_source or "", re.IGNORECASE):
+        return "checkpoint"
     if "/login" in path or re.search(
         r"<form[^>]*id=[\"']login_form[\"']", page_source or "", re.IGNORECASE
     ):
@@ -67,9 +69,19 @@ def facebook_network_route(
         try:
             proxy = urlsplit(proxy_url.strip())
             scheme = proxy.scheme.lower()
-            if scheme not in {"http", "https", "socks5", "socks5h"} or not proxy.hostname:
+            port = proxy.port
+            if (
+                scheme not in {"http", "https", "socks5", "socks5h"}
+                or not proxy.hostname
+                or proxy.username is not None
+                or proxy.password is not None
+                or proxy.path not in {"", "/"}
+                or proxy.query
+                or proxy.fragment
+                or (port is not None and not 1 <= port <= 65535)
+            ):
                 return None
-            port = proxy.port or (443 if scheme == "https" else 1080 if scheme.startswith("socks5") else 80)
+            port = port or (443 if scheme == "https" else 1080 if scheme.startswith("socks5") else 80)
             with socket.create_connection((proxy.hostname, port), timeout=timeout):
                 return "proxy"
         except (OSError, ValueError):
@@ -141,7 +153,17 @@ def facebook_media_id(url: str) -> str | None:
         parts = urlsplit((url or "").strip())
     except ValueError:
         return None
-    if not _facebook_host(parts.hostname or ""):
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme.lower() not in {"http", "https"}
+        or parts.username is not None
+        or parts.password is not None
+        or (port is not None and port not in {80, 443})
+        or not _facebook_host(parts.hostname or "")
+    ):
         return None
     match = _VIDEO_PATH.search(parts.path or "")
     if match:
@@ -166,7 +188,17 @@ def canonicalize_facebook_video_url(url: str) -> str | None:
     except ValueError:
         return None
     host = (parts.hostname or "").lower().rstrip(".")
-    if parts.scheme.lower() not in {"http", "https"} or not _facebook_host(host):
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme.lower() not in {"http", "https"}
+        or parts.username is not None
+        or parts.password is not None
+        or (port is not None and port not in {80, 443})
+        or not _facebook_host(host)
+    ):
         return None
     path = re.sub(r"/{2,}", "/", parts.path or "/")
     match = _VIDEO_PATH.search(path)

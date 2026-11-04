@@ -7,6 +7,7 @@ token.json
 ai_keys.json
 accounts.json
 uploaded_ids.txt
+upload_receipts.json
 seen_ids.txt
 stats.json
 page_status.json
