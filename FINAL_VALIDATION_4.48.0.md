@@ -30,4 +30,9 @@
 - commit: `12bb0182f40f17628fb09d159e115789cfc102a4`.
 - PR: https://github.com/eldjazaireldjadida4-web/facbock.yo/pull/1 — مفتوح على `main`، غير مدمج.
 - GitHub Actions: لا توجد فحوص مسجلة للفرع.
-- لم تُنشأ حزمة إصدار.
+- حزمة الإصدار: https://github.com/eldjazaireldjadida4-web/facbock.yo/releases/tag/v4.48.0 (وسم `v4.48.0` على `12bb018`).
+- المرفقات: `facbock.yo-4.48.0.zip` (363K) و`facbock.yo-4.48.0.tar.gz` (319K) و`SHA256SUMS-4.48.0.txt`.
+- بصمات SHA-256:
+  - `facbock.yo-4.48.0.zip`: `b07c63a476927012da0105d4e1f318dec9a36a1b4c10f600594ddd6ebd5dea53`
+  - `facbock.yo-4.48.0.tar.gz`: `4a87f4c0e91334fe184d0b9064f93dc1f1c99e39c8db584393bbb7a062e3dd25`
+- تقرير نهائي: 2026-11-04، آخر إعادة تشغيل للاختبارات قبل بناء الحزمة: 464 ناجحاً.
