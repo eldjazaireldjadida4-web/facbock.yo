@@ -500,9 +500,10 @@ def automation_exit_code(result: Mapping[str, Any] | None, interrupted: bool = F
         failures = int(result.get("failed", 0) or 0)
         pending = int(result.get("pending", 0) or 0)
         network_errors = int(result.get("network_errors", 0) or 0)
+        cycle_errors = int(result.get("cycle_errors", 0) or 0)
     except (TypeError, ValueError):
         return 2
-    return 1 if failures > 0 or pending > 0 or network_errors > 0 else 0
+    return 1 if failures > 0 or pending > 0 or network_errors > 0 or cycle_errors > 0 else 0
 
 
 def run_readiness_check(project_directory: str | Path, timeout: int = 90) -> tuple[int, str]:

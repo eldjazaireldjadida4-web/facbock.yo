@@ -381,6 +381,10 @@ def test_normalize_channel_url() -> None:
         "https://www.facebook.com/profile.php?id=61554746552594")
     assert app.normalize_channel_url("https://www.facebook.com/x/reels") == \
         "https://www.facebook.com/x/reels"
+    assert app.normalize_channel_url("https://www.facebook.com/SomePage/?sk=about") == \
+        "https://www.facebook.com/SomePage/reels"
+    assert app.normalize_channel_url("https://www.facebook.com/SomePage/?sk=reels_tab") == \
+        "https://www.facebook.com/SomePage/?sk=reels_tab"
     with pytest.raises(ValueError):
         app.normalize_channel_url("https://www.youtube.com/x")
 
@@ -510,20 +514,50 @@ def test_download_hides_page_name_in_title_but_keeps_source_attribution(monkeypa
     monkeypatch.setattr(app.yt_dlp, "YoutubeDL", FakeYDL)
     url = "https://facebook.com/reel/123"
     data = app.download_video(url, "الوطنية TV")
+    canonical_source_url = "https://www.facebook.com/watch/?v=123"
     assert data is not None
     assert "Elwatania" not in data["title"]
     assert "الوطنية" not in data["title"]
     assert "views" not in data["title"]
     assert "Elwatania" in data["desc"]
     assert "المصدر الأصلي: الوطنية TV" in data["desc"]
-    assert f"رابط المقطع الأصلي: {url}" in data["desc"]
+    assert f"رابط المقطع الأصلي: {canonical_source_url}" in data["desc"]
     assert data["source_page"] == "الوطنية TV"
-    assert data["source_url"] == url
+    assert data["source_url"] == canonical_source_url
     assert "https://fb.com/x" not in data["desc"]
 
     visible_source = app.download_video(url, "الوطنية TV", omit_source_page_name=False)
     assert visible_source is not None
     assert "Elwatania" in visible_source["title"]
+
+
+def test_download_uses_muxed_fallback_when_ffmpeg_is_missing(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "123.mp4"
+    video.write_bytes(b"video")
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, options):
+            captured.update(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, download=True):
+            return {"id": "123", "title": "عنوان", "filepath": str(video), "duration": 30}
+
+        def prepare_filename(self, _info):
+            return str(video)
+
+    monkeypatch.setattr(app.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(app.yt_dlp, "YoutubeDL", FakeYDL)
+
+    assert app.download_video("https://www.facebook.com/reel/123") is not None
+    assert captured["format"] == "best[ext=mp4]/best"
+    assert "merge_output_format" not in captured
 
 
 # ─────────────────────────────────────────────

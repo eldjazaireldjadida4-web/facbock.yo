@@ -67,6 +67,7 @@ def test_automation_exit_codes_report_success_and_failures():
     assert control_plane.automation_exit_code({"failed": 2, "fatal": None}) == 1
     assert control_plane.automation_exit_code({"failed": 0, "pending": 59, "fatal": None}) == 1
     assert control_plane.automation_exit_code({"failed": 0, "pending": 0, "network_errors": 1}) == 1
+    assert control_plane.automation_exit_code({"failed": 0, "cycle_errors": 1, "fatal": None}) == 1
     assert control_plane.automation_exit_code({"failed": 0, "fatal": "OAuth unavailable"}) == 2
     assert control_plane.automation_exit_code({"failed": "invalid"}) == 2
     assert control_plane.automation_exit_code(None) == 1

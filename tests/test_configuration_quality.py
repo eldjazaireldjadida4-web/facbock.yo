@@ -110,6 +110,68 @@ def test_youtube_oauth_token_is_loaded_from_app_directory(monkeypatch, tmp_path)
     assert loaded_paths == [str(token_path)]
 
 
+@pytest.mark.parametrize("allow_interactive", [True, False])
+def test_expired_youtube_token_without_refresh_token_is_reauthorized_safely(
+    monkeypatch, tmp_path, allow_interactive
+):
+    app_dir = tmp_path / "application"
+    app_dir.mkdir()
+    secrets_file = app_dir / "client_secrets.json"
+    secrets_file.write_text("{}", encoding="utf-8")
+    token_file = app_dir / "channel1_token.json"
+    token_file.write_text(json.dumps({"scopes": app.SCOPES}), encoding="utf-8")
+    monkeypatch.setattr(app, "APP_DIRECTORY", str(app_dir))
+
+    class ExpiredCredentials:
+        valid = False
+        expired = True
+        refresh_token = None
+
+    class FreshCredentials:
+        valid = True
+        expired = False
+        refresh_token = "refresh-token"
+
+        def to_json(self):
+            return json.dumps({"scopes": app.SCOPES, "refresh_token": self.refresh_token})
+
+    monkeypatch.setattr(
+        app.Credentials,
+        "from_authorized_user_file",
+        lambda *_args, **_kwargs: ExpiredCredentials(),
+    )
+    flow_calls = []
+
+    class Flow:
+        def run_local_server(self, port=0):
+            flow_calls.append(port)
+            return FreshCredentials()
+
+    monkeypatch.setattr(
+        app.InstalledAppFlow,
+        "from_client_secrets_file",
+        lambda *_args, **_kwargs: Flow(),
+    )
+    built = []
+    monkeypatch.setattr(
+        app, "build", lambda *_args, **kwargs: built.append(kwargs["credentials"]) or "youtube-service"
+    )
+
+    service, error = app.get_youtube(
+        "channel1", secrets_file=str(secrets_file), allow_interactive=allow_interactive
+    )
+
+    if allow_interactive:
+        assert (service, error) == ("youtube-service", None)
+        assert flow_calls == [0]
+        assert len(built) == 1 and isinstance(built[0], FreshCredentials)
+    else:
+        assert service is None
+        assert "لا يوجد تفويض YouTube صالح" in error
+        assert flow_calls == []
+        assert built == []
+
+
 @pytest.mark.parametrize("value", ["two", "nan", "inf", "-1"])
 def test_invalid_cli_min_disk_value_fails_closed(value):
     cfg = configparser.ConfigParser()

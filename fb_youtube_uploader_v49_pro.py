@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.46.0 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.47.0 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -22,7 +22,7 @@ _check_dependencies()
 import argparse
 import time, os, re, json, logging, random, threading, queue, configparser, shutil, hashlib, unicodedata, math
 import subprocess, sys, tempfile
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 import glob
 from datetime import datetime, timedelta, timezone
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageStat, features
@@ -132,7 +132,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.46.0"
+__version__ = "4.47.0"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1431,6 +1431,11 @@ def get_youtube(account_name, secrets_file=None, allow_interactive=True):
                 creds.refresh(Request())
             except Exception:
                 creds = None
+        elif creds and creds.expired:
+            # An expired access token without a refresh token must trigger consent again.
+            creds = None
+        if creds is not None and not creds.valid:
+            creds = None
         if not creds:
             if not allow_interactive:
                 return None, "لا يوجد تفويض YouTube صالح للتشغيل الآلي. افتح الواجهة وسجّل الدخول أولاً."
@@ -1512,15 +1517,21 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
             log_cb("تخطّيت رابطاً لا يطابق صيغة فيديو فيسبوك مدعومة.")
         return None
     logger = _YtDlpQuietLogger()
+    ffmpeg_available = bool(shutil.which("ffmpeg"))
+    format_selector = (
+        "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        if ffmpeg_available else "best[ext=mp4]/best"
+    )
+    if not ffmpeg_available and log_cb:
+        log_cb("FFmpeg غير متاح؛ أستخدم صيغة فيديو مدمجة مسبقاً لتفادي فشل دمج الصوت والصورة.")
     ydl_opts = {
-        "format": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": format_selector,
         "outtmpl": os.path.join(VIDEO_DIRECTORY, "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
         "logger": logger,
-        "merge_output_format": "mp4",
         **_network_tweaks(
             cookies_file,
             socket_timeout=30,
@@ -1531,6 +1542,8 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
             legacy_retries_key="RETRIES",
         ),
     }
+    if ffmpeg_available:
+        ydl_opts["merge_output_format"] = "mp4"
 
     def stop_hook(_status):
         if stop_event is not None and stop_event.is_set():
@@ -1564,13 +1577,9 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
                     info.get("description") or "",
                     keep_newlines=True,
                 )
-                source_url = ""
-                try:
-                    parsed_source = urlparse(url)
-                    source_url = urlunparse((parsed_source.scheme, parsed_source.netloc,
-                                             parsed_source.path, "", "", ""))
-                except Exception:
-                    source_url = ""
+                # The canonical URL retains the video ID; dropping the query from /watch
+                # would turn attribution into a generic Facebook page link.
+                source_url = download_url
                 source_label = next((str(name).strip() for name in source_names
                                      if str(name or "").strip()), "")
                 if source_label:
@@ -2948,6 +2957,20 @@ def wait_for_review_decision(ui_queue, stop_event, payload, poll_interval=0.2):
 
 def automatic_rights_preflight_errors(settings):
     return validate_automatic_rights_settings(settings)
+
+
+def cli_rights_preflight_errors(settings):
+    """Explain that headless CLI cannot perform the GUI's per-video review."""
+    if not isinstance(settings, dict):
+        return ["إعدادات بوابة الحقوق غير صالحة."]
+    if settings.get("dry_run"):
+        return []
+    if str(settings.get("rights_gate_mode") or "strict").strip().lower() == "strict":
+        return [
+            "وضع --cli لا يعرض نافذة مراجعة لكل فيديو؛ RIGHTS_GATE_MODE=strict يمنع الرفع الآلي. "
+            "استخدم الواجهة الرسومية للموافقة اليدوية، أو operator_confirmed بإقرار صادق ومكتمل فقط."
+        ]
+    return automatic_rights_preflight_errors(settings)
 
 
 def release_rights_holds_for_auto_mode(items, settings):
@@ -5540,6 +5563,7 @@ class App:
     def _worker(self, pages, settings, watch_mode):
         up_total, fail_total = 0, 0
         network_error_total = 0
+        cycle_error_total = 0
         fatal_error = None
         run_lock = None
         try:
@@ -5599,6 +5623,7 @@ class App:
                             wait_min = settings["interval_minutes"]
                     except Exception as error:
                         consec_errors += 1
+                        cycle_error_total += 1
                         logging.exception("خطأ غير متوقع في دورة المراقبة #%s", cycle)
                         wait_min = min(60, settings["interval_minutes"] * (2 ** consec_errors))
                         self._log(f"خطأ في الدورة: {error} — إعادة المحاولة بعد {wait_min} دقيقة")
@@ -5641,11 +5666,13 @@ class App:
             pending_label = pending_total if pending_total is not None else "غير معروف"
             self._log(
                 f"انتهى! مرفوع: {up_total}, فشل فعلي: {fail_total}, "
-                f"تعذر اتصال الشبكة: {network_error_total}, قيد الانتظار/المراجعة: {pending_label}"
+                f"تعذر اتصال الشبكة: {network_error_total}, أخطاء دورات: {cycle_error_total}, "
+                f"قيد الانتظار/المراجعة: {pending_label}"
             )
             self._uiq.put(("finished", {
                 "uploaded": up_total, "failed": fail_total, "pending": pending_total,
-                "network_errors": network_error_total, "fatal": fatal_error, "watch": watch_mode,
+                "network_errors": network_error_total, "cycle_errors": cycle_error_total,
+                "fatal": fatal_error, "watch": watch_mode,
             }))
 
     def _run_cycle(self, ctx, pages, settings, watch_mode):
@@ -6868,13 +6895,15 @@ class App:
         if result.get("fatal"):
             self.status_lbl.config(text="توقفت العملية؛ راجع السجل", fg=ERR)
             messagebox.showerror("تعذرت العملية", result["fatal"] + "\n\nراجع ملف errors.log للتفاصيل.")
-        elif result.get("failed") or result.get("pending") or result.get("network_errors"):
+        elif result.get("failed") or result.get("pending") or result.get("network_errors") or result.get("cycle_errors"):
             failed = int(result.get("failed", 0) or 0)
             network_errors = int(result.get("network_errors", 0) or 0)
+            cycle_errors = int(result.get("cycle_errors", 0) or 0)
             pending = result.get("pending")
             pending_label = str(pending) if pending is not None else "غير معروف"
             self.status_lbl.config(
-                text=f"اكتملت مع {failed} إخفاقات فعلية، و{network_errors} تعذرات شبكة، و{pending_label} عنصر قيد الانتظار/المراجعة؛ راجع السجل",
+                text=f"اكتملت مع {failed} إخفاقات فعلية، و{network_errors} تعذرات شبكة، "
+                     f"و{cycle_errors} أخطاء دورات، و{pending_label} عنصر قيد الانتظار/المراجعة؛ راجع السجل",
                 fg=WARN,
             )
         else:
@@ -7165,7 +7194,7 @@ def _run_cli_preflight(settings):
         errors.append("لا توجد صفحات Facebook مفعّلة في pages.json.")
     if settings.get("content_review_config_error") and not settings.get("dry_run"):
         errors.append("قيمة SAFETY.ENABLED غير صالحة؛ استخدم true أو false.")
-    errors.extend(automatic_rights_preflight_errors(settings))
+    errors.extend(cli_rights_preflight_errors(settings))
 
     errors.extend(validate_content_review_settings(
         settings.get("content_review_enabled") and not settings.get("dry_run"),

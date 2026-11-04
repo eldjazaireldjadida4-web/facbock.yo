@@ -104,6 +104,14 @@ def test_automatic_preflight_only_blocks_real_unreviewed_uploads():
     assert app.automatic_rights_preflight_errors(dict(strict, review_before_upload=True)) == []
 
 
+def test_cli_strict_gate_explains_that_manual_review_is_gui_only():
+    errors = app.cli_rights_preflight_errors({"rights_gate_mode": "strict", "dry_run": False})
+
+    assert len(errors) == 1
+    assert "--cli" in errors[0]
+    assert "الواجهة الرسومية" in errors[0]
+
+
 def test_gui_start_stops_before_worker_when_operator_evidence_is_missing():
     class Label:
         def __init__(self):

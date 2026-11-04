@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import parse_qsl, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from facebook_scraper import canonicalize_facebook_video_url, facebook_media_id
 
@@ -25,15 +25,22 @@ def normalize_channel_url(url):
     host = parts.netloc.lower().split(":")[0]
     if not any(host == h or host.endswith("." + h) for h in FACEBOOK_HOSTS):
         raise ValueError(f"ليس رابط فيسبوك: {url}")
-    path, query = parts.path, parts.query
+    path = parts.path
+    query_items = parse_qsl(parts.query, keep_blank_values=True)
     segments = [s for s in path.split("/") if s]
     lowered = {s.lower() for s in segments}
-    if lowered & {"reel", "reels", "videos"} or "sk" in {k.lower() for k, _ in parse_qsl(query)}:
+    reels_tab_selected = any(
+        key.lower() == "sk" and value.lower() in {"reels_tab", "videos", "videos_tab"}
+        for key, value in query_items
+    )
+    if lowered & {"reel", "reels", "videos"} or reels_tab_selected:
         return urlunparse(parts)
+    query_items = [(key, value) for key, value in query_items if key.lower() != "sk"]
     if segments and segments[0].lower() == "profile.php":
-        query = f"{query}&sk=reels_tab" if query else "sk=reels_tab"
+        query_items.append(("sk", "reels_tab"))
     elif len(segments) == 1:
         path = f"/{segments[0]}/reels"
+    query = urlencode(query_items)
     return urlunparse((parts.scheme, parts.netloc, path, parts.params, query, parts.fragment))
 
 

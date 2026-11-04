@@ -22,7 +22,7 @@ from content_safety import (
 from facebook_auth import facebook_cookie_setup_status
 from facebook_scraper import DEFAULT_NETWORK_PREFLIGHT_TIMEOUT
 
-APP_VERSION = "4.46.0"
+APP_VERSION = "4.47.0"
 REPORT_DIRECTORY = "reports"
 NETWORK_ERROR_MARKERS = (
     "network",

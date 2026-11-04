@@ -40,6 +40,15 @@ def test_fb_watch_short_link_is_preserved_for_redirect_resolution():
     assert facebook_media_id(url) == "fb.watch:AbC123"
 
 
+def test_facebook_share_video_urls_are_preserved_and_have_stable_ids():
+    for kind in ("r", "v"):
+        url = f"https://www.facebook.com/share/{kind}/AbC123/?mibextid=tracking"
+        assert canonicalize_facebook_video_url(url) == (
+            f"https://www.facebook.com/share/{kind}/AbC123/"
+        )
+        assert facebook_media_id(url) == f"facebook-share:{kind}:AbC123"
+
+
 def test_non_video_and_non_facebook_urls_are_rejected():
     assert canonicalize_facebook_video_url("https://example.com/reel/123") is None
     assert canonicalize_facebook_video_url("https://facebook.com/channel/reels/") is None

@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 _VIDEO_PATH = re.compile(r"/(?:reels?|videos?)/([A-Za-z0-9_-]+)(?:/|$)", re.IGNORECASE)
+_SHARE_PATH = re.compile(r"/share/([rv])/([A-Za-z0-9_-]+)(?:/|$)", re.IGNORECASE)
 _TRANSIENT_MARKERS = (
     "timed out",
     "timeout",
@@ -145,6 +146,9 @@ def facebook_media_id(url: str) -> str | None:
     match = _VIDEO_PATH.search(parts.path or "")
     if match:
         return match.group(1)
+    share_match = _SHARE_PATH.search(parts.path or "")
+    if share_match:
+        return f"facebook-share:{share_match.group(1).lower()}:{share_match.group(2)}"
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     for key in ("v", "video_id", "story_fbid"):
         value = str(query.get(key, "")).strip()
@@ -170,6 +174,11 @@ def canonicalize_facebook_video_url(url: str) -> str | None:
         video_id = match.group(1)
         path = "/watch/"
         query = urlencode({"v": video_id})
+        canonical_host = "www.facebook.com"
+    elif (share_match := _SHARE_PATH.search(path)):
+        # Preserve the share URL; yt-dlp can follow its normal redirect using the configured session.
+        path = f"/share/{share_match.group(1).lower()}/{share_match.group(2)}/"
+        query = ""
         canonical_host = "www.facebook.com"
     elif path.rstrip("/").lower() in {"/watch", "/watch.php", "/video.php"}:
         query_values = dict(parse_qsl(parts.query, keep_blank_values=True))
