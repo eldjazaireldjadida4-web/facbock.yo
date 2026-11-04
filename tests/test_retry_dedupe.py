@@ -85,21 +85,29 @@ def test_cycle_retries_only_unuploaded_items(worker, monkeypatch):
     assert any("مسجّل مسبقاً كمرفوع" in message for message in worker.logs)
 
 
-def test_short_titles_match_exactly_in_channel_index():
-    """عنوان عام قصير («Video») يقابل نفسه في القناة بدل تجاوز الفحص."""
-    channel = [{"video_id": "abc", "title": "Video", "published_at": "", "duration": 30}]
-    matches = app.find_channel_title_matches("Video", 30, channel)
+def test_meaningful_short_titles_match_exactly_in_channel_index():
+    """عنوان حقيقي قصير يقابله نفسه في القناة بدقة، دون مطابقة ضبابية."""
+    channel = [{"video_id": "abc", "title": "هدف رائع", "published_at": "", "duration": 30}]
+    matches = app.find_channel_title_matches("هدف رائع", 30, channel)
     assert matches and matches[0]["video_id"] == "abc"
 
 
-def test_short_titles_do_not_match_different_words():
-    channel = [{"video_id": "abc", "title": "Shorts", "published_at": "", "duration": 30}]
+def test_generic_titles_skip_channel_title_matching():
+    """العناوين العامة («Video») لا تُقارن بعناوين القناة؛ المطابقة عنوانية بلا معنى عندها."""
+    channel = [{"video_id": "abc", "title": "هدف رائع", "published_at": "", "duration": 30}]
     assert app.find_channel_title_matches("Video", 30, channel) == []
+    assert app.find_channel_title_matches("Facebook Live", 30, channel) == []
 
 
-def test_short_titles_match_in_content_memory(monkeypatch, tmp_path):
+def test_meaningful_short_titles_do_not_match_different_words():
+    channel = [{"video_id": "abc", "title": "أخبار اليوم", "published_at": "", "duration": 30}]
+    assert app.find_channel_title_matches("هدف رائع", 30, channel) == []
+
+
+def test_generic_titles_are_not_duplicates_in_content_memory(monkeypatch, tmp_path):
+    """عنوان فيسبوك العام لا يُعد تكراراً حتى لو سبق رفع عنوان عام بنفس النص."""
     monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
     monkeypatch.setattr(app, "load_state", lambda: {"title_fingerprints": ["video"]})
-    assert app.is_duplicate_content("Video") is True
-    monkeypatch.setattr(app, "load_state", lambda: {"title_fingerprints": ["shorts"]})
     assert app.is_duplicate_content("Video") is False
+    monkeypatch.setattr(app, "load_state", lambda: {"title_fingerprints": ["هدفرائع"]})
+    assert app.is_duplicate_content("هدف رائع") is True

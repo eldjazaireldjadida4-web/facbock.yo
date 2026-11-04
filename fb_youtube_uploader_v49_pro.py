@@ -216,7 +216,7 @@ from texttools import (AR_STOPWORDS, BIDI_OVERRIDE_CHARS, EDGE_SEPARATORS,
                        _truncate_suffix_component, _unicode_word_tokens,
                        _youtube_tag_cost, build_description, build_title,
                        clean_title, ensure_source_attribution,
-                       extract_hashtags, normalize_generated_title,
+                       extract_hashtags, is_generic_title, normalize_generated_title,
                        normalize_youtube_tags, normalize_youtube_title,
                        optimize_title, prepare_public_title,
                        sanitize_public_text)
@@ -236,8 +236,8 @@ __all__ = [
     "_safe_normalize_channel_url", "_truncate_smart", "_truncate_suffix_component",
     "_unicode_word_tokens", "_youtube_tag_cost", "build_description",
     "build_title", "classify_upload_error", "clean_title",
-    "ensure_source_attribution", "extract_hashtags", "normalize_channel_url",
-    "normalize_generated_title", "normalize_youtube_tags",
+    "ensure_source_attribution", "extract_hashtags", "is_generic_title",
+    "normalize_channel_url", "normalize_generated_title", "normalize_youtube_tags",
     "normalize_youtube_title", "optimize_title", "order_reels",
     "prepare_public_title", "reel_id_from_url_any",
     "sanitize_public_text",
@@ -759,7 +759,7 @@ def is_duplicate_content(title, threshold=0.90, lookback=600):
     """يقارن العنوان بآخر العناوين التي رفعها هذا المشروع."""
     from difflib import SequenceMatcher
     fingerprint = content_fingerprint(title)
-    if not fingerprint:
+    if not fingerprint or is_generic_title(title):
         return False
     state = load_state()
     exact_only = len(fingerprint) < 10
@@ -885,7 +885,7 @@ def find_channel_title_matches(title, duration, channel_videos, threshold=0.90, 
     """يعيد أقرب العناوين في القناة؛ التطابق عنواني ولا يثبت تطابق ملف الفيديو."""
     from difflib import SequenceMatcher
     fingerprint = content_fingerprint(title)
-    if not fingerprint:
+    if not fingerprint or is_generic_title(title):
         return []
     exact_only = len(fingerprint) < 10
     matches = []
@@ -917,7 +917,7 @@ def should_pause_for_unverified_channel(dedupe_enabled, review_enabled, index_ve
 def remember_content(title, media_hash=None, frame_fingerprint=None, video_id=None, duration=None):
     """يحفظ بصمات المحتوى بعد نجاح الرفع."""
     state = load_state()
-    fingerprint = content_fingerprint(title)
+    fingerprint = "" if is_generic_title(title) else content_fingerprint(title)
     fingerprints = state.get("title_fingerprints", [])
     if len(fingerprint) >= 10:
         fingerprints.append(fingerprint)
@@ -1100,9 +1100,11 @@ def ai_generate_metadata(raw_title, raw_desc, page_name, duration, model,
     page_name = str(page_name or "")
     style = AI_STYLES.get(style_name, AI_STYLES["احترافي متوازن"])
     dur_txt = f"{int(duration)} ثانية" if duration else "غير معروفة"
+    title_hint = ("غير متوفر — استنتجه من الوصف واسم الصفحة"
+                  if is_generic_title(raw_title) else raw_title[:200])
     prompt = f"""أنت خبير تسويق محتوى يوتيوب عربي. لدي فيديو قصير (Reel) من صفحة فيسبوك "{page_name or 'عامة'}".
 
-العنوان الأصلي: {raw_title[:200]}
+العنوان الأصلي: {title_hint}
 الوصف الأصلي: {(raw_desc or '')[:400]}
 مدة الفيديو: {dur_txt}
 
@@ -1767,6 +1769,40 @@ def _cleanup_promoted_download(path, output_dir):
         logging.warning("تعذر تنظيف تنزيل مرحلي غير مكتمل: %s", redact_sensitive_text(error))
 
 
+def _refetch_facebook_title(download_url, source_names, remove_tags, omit_source_page_name,
+                            ydl_opts, log_cb=None):
+    """عندما يعيد فيسبوك عنواناً عاماً («Video» أو «Facebook Live») نعيد جلب البيانات فقط
+    مرة واحدة بحد مهلة أطول؛ وإن بقي العنوان عاماً بنينا عنواناً وصفياً من اسم الصفحة
+    والوقت بدل رفع «Video» حرفياً إلى يوتيوب. يعيد (العنوان، هل هو عنوان بديل)."""
+    try:
+        meta_options = dict(ydl_opts)
+        meta_options["skip_download"] = True
+        meta_options.pop("progress_hooks", None)
+        try:
+            meta_options["socket_timeout"] = max(int(meta_options.get("socket_timeout") or 0), 60)
+        except (TypeError, ValueError):
+            meta_options["socket_timeout"] = 60
+        with yt_dlp.YoutubeDL(meta_options) as ydl:
+            meta = ydl.extract_info(download_url, download=False)
+        candidate = prepare_public_title(
+            (meta or {}).get("title", ""), source_names,
+            remove_hashtags=remove_tags,
+            omit_source_page_name=omit_source_page_name,
+        )
+        if not is_generic_title(candidate):
+            if log_cb:
+                log_cb(f"عُدّل العنوان العام بعد إعادة جلب بيانات الصفحة: {candidate[:40]}")
+            return candidate, False
+    except Exception as error:
+        logging.warning("تعذر إعادة جلب بيانات العنوان: %s", error)
+    page_label = next((str(name).strip() for name in source_names if str(name or "").strip()), "")
+    stamp = pt_now().strftime("%Y-%m-%d %H:%M")
+    fallback = f"مقطع {page_label} — {stamp}" if page_label else f"مقطع — {stamp}"
+    if log_cb:
+        log_cb("لم يوفر فيسبوك عنواناً حقيقياً؛ استُخدم عنوان وصفي باسم الصفحة والوقت. فعّل الذكاء الاصطناعي لتحسينه.")
+    return fallback, True
+
+
 def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_tags=False,
                    cookies_file=None, stop_event=None, omit_source_page_name=True, output_dir=None):
     """ينزّل المقطع إلى مجلد محاولة خاص، ثم ينقله إلى اسم فريد بعد اكتمال التنزيل."""
@@ -1867,6 +1903,11 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
                 remove_hashtags=remove_tags,
                 omit_source_page_name=omit_source_page_name,
             )
+            title_generic = is_generic_title(title)
+            if title_generic:
+                title, title_generic = _refetch_facebook_title(
+                    download_url, source_names, remove_tags, omit_source_page_name,
+                    ydl_opts, log_cb)
             description = sanitize_public_text(info.get("description") or "", keep_newlines=True)
             source_label = next((str(name).strip() for name in source_names
                                  if str(name or "").strip()), "")
@@ -1883,6 +1924,7 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
             return {
                 "file": file_path,
                 "title": title,
+                "title_generic": bool(title_generic),
                 "desc": description,
                 "source_names": source_names,
                 "source_page": source_label,

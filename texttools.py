@@ -298,6 +298,21 @@ def normalize_generated_title(title):
         return ""
     return cleaned
 
+GENERIC_TITLE_VALUES = frozenset({
+    "video", "videos", "facebook video", "facebook live", "live video",
+    "facebook reel", "facebook reels", "reel", "reels", "reels video",
+    "watch", "fb live", "مقطع فيديو", "فيديو", "بث مباشر", "فيديو مباشر",
+})
+
+
+def is_generic_title(title):
+    """يكشف العناوين العامة التي يرجعها فيسبوك (og:title=Video مثلاً)؛
+    هذه العناوين غير صالحة للنشر ولا يمكن الاعتماد عليها في مطابقة التكرار."""
+    text = normalize_youtube_title(title)
+    if not text or not any(char.isalnum() for char in text):
+        return True
+    return text.casefold().strip(" -|،.·#") in GENERIC_TITLE_VALUES
+
 
 def _youtube_tag_cost(tag):
     return len(tag) + (2 if " " in tag else 0)
