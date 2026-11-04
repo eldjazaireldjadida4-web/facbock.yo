@@ -39,7 +39,7 @@ def safe_facebook_page_url(value: str) -> str | None:
         return None
     if parts.scheme.lower() not in {"http", "https"}:
         return None
-    if parts.username or parts.password or port not in {None, 80, 443}:
+    if parts.username is not None or parts.password is not None or port not in {None, 80, 443}:
         return None
     if not any(host == domain or host.endswith(f".{domain}") for domain in _FACEBOOK_DOMAINS):
         return None

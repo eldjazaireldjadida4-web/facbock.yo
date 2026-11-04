@@ -151,7 +151,7 @@ def test_review_and_upload_use_same_budgeted_tags(monkeypatch, tmp_path):
 
     class Request:
         def next_chunk(self):
-            return None, {"id": "youtube-id"}
+            return None, {"id": "abcdefghijk"}
 
     class YouTube:
         def videos(self):
@@ -171,7 +171,7 @@ def test_review_and_upload_use_same_budgeted_tags(monkeypatch, tmp_path):
     )
 
     effective_tags = ["A" * 490, "Foo Bar"]
-    assert result == "youtube-id"
+    assert result == "abcdefghijk"
     assert captured["caption"] == build_review_caption("description", effective_tags)
     assert captured["body"]["snippet"]["tags"] == effective_tags
 

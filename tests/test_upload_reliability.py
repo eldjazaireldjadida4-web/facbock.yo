@@ -9,7 +9,7 @@ import fb_youtube_uploader_v49_pro as app
 
 
 class UploadRequest:
-    def __init__(self, events, video_id="video-id-001"):
+    def __init__(self, events, video_id="mnopqrstuvw"):
         self.events = events
         self.video_id = video_id
 
@@ -55,10 +55,10 @@ def test_upload_receipt_is_saved_before_optional_verification(tmp_path):
         on_confirmed=lambda video_id: youtube.events.append(("receipt", video_id)),
     )
 
-    assert result == "video-id-001"
+    assert result == "mnopqrstuvw"
     assert youtube.events == [
         "youtube-confirmed",
-        ("receipt", "video-id-001"),
+        ("receipt", "mnopqrstuvw"),
         "status-verified",
     ]
 
@@ -71,7 +71,7 @@ def test_receipt_persistence_failure_never_reports_a_safe_retry(tmp_path):
     def fail_persist(_video_id):
         raise OSError("disk full")
 
-    with pytest.raises(RuntimeError, match="video-id-001"):
+    with pytest.raises(RuntimeError, match="mnopqrstuvw"):
         app.upload_video(
             youtube,
             {"file": str(video), "title": "title", "desc": "description"},

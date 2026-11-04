@@ -224,7 +224,7 @@ def test_cycle_applies_title_optimization_and_category(sandboxed_files, monkeypa
     captured = {}
     def fake_upload(yt, vd, privacy, pl, tags, category, sched, log_cb):
         captured.update(title=vd["title"], category=category, desc=vd["desc"])
-        return "YT-1"
+        return "abcdefghijk"
     monkeypatch.setattr(pro, "upload_video", fake_upload)
     monkeypatch.setattr(pro, "disk_free_gb", lambda: 100.0)
 
@@ -268,7 +268,7 @@ def test_cycle_brands_video_before_upload(sandboxed_files, monkeypatch, tmp_path
     captured = {}
     def fake_upload(yt, vd, *_a):
         captured["file"] = vd["file"]
-        return "YT-2"
+        return "lmnopqrstuv"
     monkeypatch.setattr(pro, "upload_video", fake_upload)
     monkeypatch.setattr(pro, "disk_free_gb", lambda: 100.0)
 

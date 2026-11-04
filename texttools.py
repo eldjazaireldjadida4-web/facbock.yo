@@ -184,6 +184,7 @@ def prepare_public_title(title, source_names=(), remove_hashtags=False,
 
 
 YOUTUBE_TITLE_MAX = 100
+YOUTUBE_DESCRIPTION_MAX = 5000
 YOUTUBE_TAGS_MAX = 500
 # كلمات حشو شائعة في عناوين فيسبوك لا فائدة منها في يوتيوب
 FILLER_PATTERNS = [
@@ -362,7 +363,7 @@ def extract_hashtags(title, tags, max_tags=8):
             merged_seen.add(key)
     return ' '.join(f'#{t.replace(" ", "_")}' for t in merged[:12])
 
-def ensure_source_attribution(description, source_page="", source_url=""):
+def ensure_source_attribution(description, source_page="", source_url="", log_cb=None):
     body = (description or "").strip()
     attribution = []
     page_line = f"المصدر الأصلي: {source_page}" if source_page else ""
@@ -371,22 +372,39 @@ def ensure_source_attribution(description, source_page="", source_url=""):
         attribution.append(page_line)
     if url_line and url_line not in body:
         attribution.append(url_line)
-    if not attribution:
+    attribution_text = "\n".join(attribution)
+    if not attribution_text:
+        if len(body) > YOUTUBE_DESCRIPTION_MAX:
+            if log_cb:
+                log_cb(f"قُصّر الوصف إلى {YOUTUBE_DESCRIPTION_MAX} حرفاً لحد YouTube؛ راجعه قبل النشر.")
+            return body[:YOUTUBE_DESCRIPTION_MAX].rstrip()
         return body
-    return "\n\n".join(part for part in (body, "\n".join(attribution)) if part)
+    attribution_text = attribution_text[:YOUTUBE_DESCRIPTION_MAX].rstrip()
+    separator = "\n\n" if body else ""
+    body_limit = max(0, YOUTUBE_DESCRIPTION_MAX - len(separator) - len(attribution_text))
+    if len(body) > body_limit and log_cb:
+        log_cb(f"قُصّر متن الوصف لإبقاء المصدر ضمن حد YouTube البالغ {YOUTUBE_DESCRIPTION_MAX} حرفاً.")
+    body = body[:body_limit].rstrip()
+    return "\n\n".join(part for part in (body, attribution_text) if part)
 
 
 def build_description(original_desc, extra_desc, title, tags,
-                      auto_hashtags=True, credit_line=""):
-    """يبني وصفاً نهائياً: الوصف الأصلي + الإضافي + خط الهاشتاجات + حقوق اختيارية."""
+                      auto_hashtags=True, credit_line="", log_cb=None):
+    """يبني وصفاً نهائياً ضمن الحد الأقصى الذي يقبله YouTube."""
     parts = []
     if original_desc and original_desc.strip():
-        parts.append(original_desc.strip()[:2000])
+        parts.append(original_desc.strip())
     if extra_desc and extra_desc.strip():
         parts.append(extra_desc.strip())
     if auto_hashtags:
         tags_line = extract_hashtags(title, tags)
         if tags_line:
             parts.append(tags_line)
-    if credit_line.strip():
+    if credit_line and credit_line.strip():
         parts.append(credit_line.strip())
+    description = "\n\n".join(parts)
+    if len(description) > YOUTUBE_DESCRIPTION_MAX:
+        description = description[:YOUTUBE_DESCRIPTION_MAX].rstrip()
+        if log_cb:
+            log_cb(f"قُصّر الوصف إلى {YOUTUBE_DESCRIPTION_MAX} حرفاً لحد YouTube؛ راجعه قبل النشر.")
+    return description

@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.47.0 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.48.0 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -25,6 +25,11 @@ import subprocess, sys, tempfile
 from urllib.parse import urlparse
 import glob
 from datetime import datetime, timedelta, timezone
+from config_store import ConfigRecoveryError, read_config, write_config_atomically
+from file_security import open_private_append, restrict_file_permissions
+from pipeline_errors import PipelineFailure
+from safe_logging import SecureRotatingFileHandler, mask_secret, redact_sensitive_text, secure_log_handler
+from settings_validation import validate_configuration
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageStat, features
 
 import arabic_reshaper
@@ -132,7 +137,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.47.0"
+__version__ = "4.48.0"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -144,15 +149,17 @@ def _app_path(path):
     return os.path.abspath(os.path.join(APP_DIRECTORY, value))
 
 ERROR_LOG_FILE = _app_path("errors.log")
+CONFIG_FILE = _app_path("config.ini")
 
 
 _FACEBOOK_NETWORK_ROUTE: str | None = None
-config = configparser.ConfigParser(interpolation=None)
 try:
-    config.read(os.path.join(APP_DIRECTORY, "config.ini"), encoding="utf-8")
-except (configparser.Error, UnicodeError, OSError) as error:
-    print(f"ملف الإعدادات config.ini غير صالح أو تعذرت قراءته: {error}")
+    config, recovered_config_from = read_config(CONFIG_FILE)
+except ConfigRecoveryError as error:
+    print(f"توقف التشغيل: {error}")
     raise SystemExit(2) from error
+if recovered_config_from and os.path.abspath(recovered_config_from) != os.path.abspath(CONFIG_FILE):
+    print(f"استُعيد config.ini من النسخة الاحتياطية {recovered_config_from.name}.")
 
 SCOPES              = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -169,6 +176,7 @@ STATS_FILE          = _app_path("stats.json")
 PAGE_STATUS_FILE    = _app_path("page_status.json")
 STATE_FILE          = _app_path("state.json")
 FAILED_QUEUE_FILE   = _app_path("failed_queue.json")
+UPLOAD_RECEIPTS_FILE = _app_path("upload_receipts.json")
 HISTORY_FILE        = _app_path("history.jsonl")
 HISTORY_MAX_BYTES   = 10_000_000   # تدوير الأرشيف عند 10MB (v4.24)
 HISTORY_BACKUPS     = 3
@@ -200,7 +208,7 @@ import notify
 from texttools import (AR_STOPWORDS, BIDI_OVERRIDE_CHARS, EDGE_SEPARATORS,
                        FILLER_PATTERNS, HASHTAG_RE, INVALID_TITLE_CHARS,
                        JUNK_STATS, MENTION_RE, SYMBOL_RUN_RE, URL_RE,
-                       YOUTUBE_TAGS_MAX, YOUTUBE_TITLE_MAX,
+                       YOUTUBE_DESCRIPTION_MAX, YOUTUBE_TAGS_MAX, YOUTUBE_TITLE_MAX,
                        _arabic_plural, _clean_title_component,
                        _collapse_symbol_runs, _compose_title_parts,
                        _drop_truncated_brand, _is_unicode_word_char,
@@ -234,69 +242,89 @@ __all__ = [
     "prepare_public_title", "reel_id_from_url_any",
     "sanitize_public_text",
 ]
-from logging.handlers import RotatingFileHandler
 # لا نكتب ملف errors.log عند تشغيل الاختبارات حتى لا يمتلئ بسجلات وهمية.
 if "pytest" not in sys.modules:
-    _log_handler = RotatingFileHandler(ERROR_LOG_FILE, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    _log_handler = SecureRotatingFileHandler(ERROR_LOG_FILE, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
     _log_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    logging.getLogger().addHandler(_log_handler)
+    logging.getLogger().addHandler(secure_log_handler(_log_handler))
 logging.getLogger().setLevel(logging.INFO)
 
 # توقيت المحيط الهادئ — حصة يوتيوب تُصفَّر منتصف الليل بهذا التوقيت
 try:
     from zoneinfo import ZoneInfo
     PT_TZ = ZoneInfo("America/Los_Angeles")
-except Exception:  # Windows بدون tzdata
+except Exception as error:
     PT_TZ = None
+    PT_TZ_ERROR = redact_sensitive_text(error)
+else:
+    PT_TZ_ERROR = ""
 
 def pt_now():
-    """الوقت الحالي بتوقيت المحيط الهادئ (مع احتياطي إذا غابت قاعدة المناطق)."""
-    if PT_TZ is not None:
-        return datetime.now(PT_TZ)
-    now = datetime.now(timezone.utc)
-    offset = -7 if 3 <= now.month <= 11 else -8  # تقريب التوقيت الصيفي الأمريكي
-    return now.astimezone(timezone(timedelta(hours=offset)))
+    """الوقت الحالي بتوقيت المحيط الهادئ باستخدام قاعدة مناطق زمنية دقيقة."""
+    if PT_TZ is None:
+        raise RuntimeError("قاعدة America/Los_Angeles غير متاحة؛ ثبّت tzdata ثم أعد التشغيل.") from None
+    return datetime.now(PT_TZ)
 
 # ════════════════════════════════════════════════════
 # HELPERS — DATA & UTILS
 # ════════════════════════════════════════════════════
-def _read_json(path, default):
+def _read_json(path, default, *, expected_type=None, fail_closed=False):
+    path = os.fspath(path)
     if not os.path.exists(path):
         return default
+
+    def read_candidate(candidate):
+        if os.path.islink(candidate) or not os.path.isfile(candidate):
+            raise OSError("state file is not a regular file")
+        with open(candidate, "r", encoding="utf-8") as source:
+            value = json.load(source)
+        if expected_type is not None and not isinstance(value, expected_type):
+            raise ValueError("state file has an unexpected structure")
+        return value
+
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as error:
-        if os.path.basename(os.fspath(path)) == globals().get("FAILED_QUEUE_FILE"):
-            logging.exception("قائمة الرفع غير قابلة للقراءة؛ أُوقف التشغيل لمنع إعادة رفع غير مقصودة")
-            raise RuntimeError("تعذرت قراءة failed_queue.json؛ لم يبدأ الرفع حمايةً من التكرار.") from error
+        value = read_candidate(path)
+        restrict_file_permissions(path)
+        return value
+    except Exception as primary_error:
         for index in range(1, 4):
             backup = f"{path}.bak{index}"
-            if not os.path.isfile(backup):
-                continue
             try:
-                with open(backup, "r", encoding="utf-8") as f:
-                    recovered = json.load(f)
-                _write_json(path, recovered)
-                logging.warning("استُعيد %s من النسخة الاحتياطية %s", path, backup)
-                return recovered
+                value = read_candidate(backup)
+                _write_json(path, value, backup=False)
+                logging.warning("استُعيد %s من النسخة الاحتياطية رقم %s", os.path.basename(path), index)
+                return value
             except Exception:
                 continue
-        logging.exception("تعذرت قراءة ملف JSON %s؛ استُخدمت القيمة الافتراضية", path)
+        if fail_closed:
+            raise RuntimeError(
+                f"تعذرت قراءة {os.path.basename(path)}؛ أُوقف التشغيل لحماية البيانات ومنع إعادة الرفع."
+            ) from primary_error
+        logging.warning("تعذرت قراءة %s؛ استُخدمت قيمة افتراضية.", os.path.basename(path))
         return default
 
-def _write_json(path, data):
+
+def _write_json(path, data, *, backup=True):
     path = os.fspath(path)
+    if os.path.islink(path):
+        raise OSError("refusing to replace a symbolic-link state file")
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
-    _backup_json(path)
+    critical_names = {
+        "failed_queue.json", "upload_receipts.json", "pages.json", "accounts.json",
+        "state.json", "channel_video_index.json",
+    }
+    if backup and os.path.exists(path):
+        if not _backup_json(path) and os.path.basename(path) in critical_names:
+            raise OSError("required state backup could not be created")
     fd, temporary_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as output:
+            json.dump(data, output, ensure_ascii=False, indent=2)
+            output.flush()
+            os.fsync(output.fileno())
         os.replace(temporary_path, path)
+        restrict_file_permissions(path)
         if os.name == "posix":
             directory_fd = os.open(directory, os.O_RDONLY)
             try:
@@ -312,16 +340,39 @@ def _write_json(path, data):
 
 
 def _backup_json(path, keep=3):
-    """يحفظ آخر نسخ معروفة صالحة كنسخ احتياطية دوّارة (.bak1 الحديثة … .bakN الأقدم)."""
+    path = os.fspath(path)
+    if not os.path.isfile(path) or os.path.islink(path) or os.path.getsize(path) <= 0:
+        return True
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.backup.", suffix=".tmp", dir=directory
+    )
     try:
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            for i in range(keep - 1, 0, -1):
-                src, dst = f"{path}.bak{i}", f"{path}.bak{i + 1}"
-                if os.path.exists(src):
-                    os.replace(src, dst)
-            shutil.copyfile(path, f"{path}.bak1")
-    except OSError as error:
-        logging.debug("تعذر إنشاء نسخة احتياطية لـ %s: %s", path, error)
+        with open(path, "rb") as source, os.fdopen(fd, "wb") as target:
+            shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+        restrict_file_permissions(temporary_path)
+        for index in range(keep - 1, 0, -1):
+            src, dst = f"{path}.bak{index}", f"{path}.bak{index + 1}"
+            if os.path.islink(src) or os.path.islink(dst):
+                raise OSError("state backup is a symbolic link")
+            if os.path.exists(src):
+                os.replace(src, dst)
+                restrict_file_permissions(dst)
+        first_backup = f"{path}.bak1"
+        if os.path.islink(first_backup):
+            raise OSError("state backup is a symbolic link")
+        os.replace(temporary_path, first_backup)
+        restrict_file_permissions(first_backup)
+        return True
+    except OSError:
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+        logging.warning("تعذر إنشاء نسخة احتياطية لملف %s.", os.path.basename(path))
+        return False
 
 
 def _harden_secret_file(path, log_cb=None):
@@ -341,16 +392,30 @@ def _harden_secret_file(path, log_cb=None):
             logging.debug("تعذر ضبط أذونات %s: %s", secret_path, error)
 
 def load_accounts():
-    return _read_json(ACCOUNTS_FILE, ["account1"])
+    accounts = _read_json(ACCOUNTS_FILE, ["account1"], expected_type=list, fail_closed=True)
+    if any(not isinstance(account, str) or not account.strip() for account in accounts):
+        raise RuntimeError("accounts.json contains invalid entries; no upload was started.")
+    return accounts or ["account1"]
 
 def save_accounts(accounts):
+    if not isinstance(accounts, list) or any(not isinstance(account, str) or not account.strip() for account in accounts):
+        raise ValueError("قائمة الحسابات غير صالحة.")
     _write_json(ACCOUNTS_FILE, accounts)
 
 def _load_id_set(path):
     if not os.path.exists(path):
         return set()
-    with open(path, "r", encoding="utf-8") as f:
-        return set(line.strip() for line in f if line.strip())
+    if os.path.islink(path):
+        raise RuntimeError(f"{os.path.basename(path)} is a symbolic link; no upload was started.")
+    restrict_file_permissions(path)
+    try:
+        with open(path, "r", encoding="utf-8") as source:
+            values = {line.strip() for line in source if line.strip()}
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError(f"Could not read {os.path.basename(path)}; no upload was started.") from error
+    if any("\n" in value or "\r" in value for value in values):
+        raise RuntimeError(f"{os.path.basename(path)} contains invalid records; no upload was started.")
+    return values
 
 def _append_id(path, vid):
     value = str(vid or "").strip()
@@ -358,11 +423,13 @@ def _append_id(path, vid):
         raise ValueError("معرّف السجل فارغ أو غير صالح.")
     if value in _load_id_set(path):
         return False
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write(f"{value}\n")
-        f.flush()
-        os.fsync(f.fileno())
+    try:
+        with open_private_append(path) as output:
+            output.write(f"{value}\n")
+            output.flush()
+            os.fsync(output.fileno())
+    except OSError as error:
+        raise RuntimeError(f"Could not securely update {os.path.basename(path)}.") from error
     return True
 
 def load_uploaded_ids():
@@ -370,6 +437,74 @@ def load_uploaded_ids():
 
 def save_uploaded_id(video_id):
     _append_id(UPLOADED_IDS_FILE, video_id)
+
+
+def load_upload_receipts(path=None):
+    path = UPLOAD_RECEIPTS_FILE if path is None else path
+    store = _read_json(
+        path,
+        {"schema_version": 1, "receipts": {}},
+        expected_type=dict,
+        fail_closed=True,
+    )
+    if store.get("schema_version") != 1 or not isinstance(store.get("receipts"), dict):
+        raise RuntimeError("upload_receipts.json has an unsupported or invalid structure; no upload was started.")
+    receipts = {}
+    for source_id, record in store["receipts"].items():
+        if not isinstance(source_id, str) or not source_id.strip() or not isinstance(record, dict):
+            raise RuntimeError("upload_receipts.json contains an invalid receipt; no upload was started.")
+        video_id = extract_youtube_video_id(str(record.get("youtube_id") or ""))
+        if video_id is None or record.get("source_id") != source_id:
+            raise RuntimeError("upload_receipts.json contains an invalid receipt; no upload was started.")
+        receipts[source_id] = dict(record)
+    return receipts
+
+
+def save_upload_receipts(receipts, path=None):
+    path = UPLOAD_RECEIPTS_FILE if path is None else path
+    if not isinstance(receipts, dict):
+        raise ValueError("سجل إيصالات YouTube غير صالح.")
+    validated = {}
+    video_ids = set()
+    for source_id, record in receipts.items():
+        source = str(source_id or "").strip()
+        if not source or not isinstance(record, dict):
+            raise ValueError("سجل إيصالات YouTube يحتوي مدخلاً غير صالح.")
+        video_id = extract_youtube_video_id(str(record.get("youtube_id") or ""))
+        if video_id is None or record.get("source_id") != source or video_id in video_ids:
+            raise ValueError("سجل إيصالات YouTube يحتوي معرّفاً غير صالح أو مكرراً.")
+        video_ids.add(video_id)
+        validated[source] = dict(record)
+    _write_json(path, {"schema_version": 1, "receipts": validated})
+
+
+def persist_upload_receipt(source_id, youtube_video_id, *, account="", url="", page="", title="", path=None):
+    path = UPLOAD_RECEIPTS_FILE if path is None else path
+    source = str(source_id or "").strip()
+    video_id = extract_youtube_video_id(str(youtube_video_id or ""))
+    if not source or video_id is None:
+        raise ValueError("لا يمكن حفظ إيصال رفع بلا معرّف مصدر ومعرّف YouTube صالح.")
+    receipts = load_upload_receipts(path)
+    existing = receipts.get(source)
+    if existing:
+        if existing.get("youtube_id") == video_id:
+            return existing, False
+        raise RuntimeError("يوجد إيصال مختلف للمصدر نفسه؛ لا تُعد الرفع قبل المطابقة اليدوية.")
+    if any(record.get("youtube_id") == video_id for record in receipts.values()):
+        raise RuntimeError("معرّف YouTube مرتبط بمصدر آخر؛ أُوقف حفظ الإيصال منعاً للتكرار.")
+    record = {
+        "source_id": source,
+        "youtube_id": video_id,
+        "account": str(account or "")[:120],
+        "url": str(url or "")[:2048],
+        "page": str(page or "")[:240],
+        "title": str(title or "")[:100],
+        "status": "uploaded",
+        "confirmed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    receipts[source] = record
+    save_upload_receipts(receipts, path)
+    return record, True
 
 def load_seen_ids():
     """معرّفات استُنفدت محاولاتها — لا تُعاد معالجتها أبداً."""
@@ -379,7 +514,7 @@ def save_seen_id(video_id):
     _append_id(SEEN_IDS_FILE, video_id)
 
 def load_stats():
-    stats = _read_json(STATS_FILE, {})
+    stats = _read_json(STATS_FILE, {}, expected_type=dict)
     stats.setdefault("total_uploaded", 0)
     stats.setdefault("total_failed", 0)
     stats.setdefault("total_downloaded", 0)
@@ -422,7 +557,7 @@ def _clean_page_status_records(records):
 
 
 def load_page_status(path=PAGE_STATUS_FILE):
-    return _clean_page_status_records(_read_json(path, {}))
+    return _clean_page_status_records(_read_json(path, {}, expected_type=dict, fail_closed=True))
 
 
 def save_page_status(records, path=PAGE_STATUS_FILE):
@@ -436,17 +571,26 @@ def bump_daily_uploads(stats):
     daily["uploaded"] += 1
 
 def load_state():
-    return _read_json(STATE_FILE, {})
+    return _read_json(STATE_FILE, {}, expected_type=dict, fail_closed=True)
 
 def save_state(state):
     _write_json(STATE_FILE, state)
 
 def load_failed_queue():
     """عناصر فشلت وستُعاد محاولتها في الدورات القادمة."""
-    q = _read_json(FAILED_QUEUE_FILE, [])
-    return deduplicate_queue_items(q) if isinstance(q, list) else []
+    items = _read_json(FAILED_QUEUE_FILE, [], expected_type=list, fail_closed=True)
+    if any(
+        not isinstance(item, dict)
+        or not str(item.get("id") or "").strip()
+        or not str(item.get("url") or "").strip()
+        for item in items
+    ):
+        raise RuntimeError("failed_queue.json contains invalid entries; no upload was started.")
+    return deduplicate_queue_items(items)
 
 def save_failed_queue(items):
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise ValueError("قائمة إعادة المحاولة غير صالحة؛ لم تُحفظ.")
     _write_json(FAILED_QUEUE_FILE, deduplicate_queue_items(items))
 
 def _rotate_history_if_needed(max_bytes=10_000_000, backups=3):
@@ -466,13 +610,13 @@ def _rotate_history_if_needed(max_bytes=10_000_000, backups=3):
 def append_history(record):
     """أرشيف دائم لكل عملية (سطر JSON لكل حدث) مع دوران تلقائي."""
     record = dict(record)
-    record.setdefault("ts", datetime.now().isoformat(timespec="seconds"))
+    record.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     _rotate_history_if_needed()
     try:
-        with open(HISTORY_FILE, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        with open_private_append(HISTORY_FILE) as output:
+            output.write(json.dumps(record, ensure_ascii=False) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
         return True
     except OSError:
         logging.exception("تعذرت الكتابة في ملف الأرشيف")
@@ -498,16 +642,18 @@ def prune_failed_queue(items, max_age_days=14):
         else:
             kept.append(item)
     for item in dropped:
-        append_history({"source_id": item.get("id", ""), "url": item.get("url", ""),
-                        "page": item.get("page", ""), "status": "expired",
-                        "error": f"تجاوز عمر {max_age_days} يوماً في قائمة الفشل"})
-    if dropped:
-        logging.info("أُسقطت %d عنصراً منتهياً من قائمة الفشل", len(dropped))
+        archived = append_history({"source_id": item.get("id", ""), "url": item.get("url", ""),
+                                   "page": item.get("page", ""), "status": "expired",
+                                   "error": f"تجاوز عمر {max_age_days} يوماً في قائمة الفشل"})
+        if not archived:
+            kept.append(item)
+    if dropped and len(kept) < len(items):
+        logging.info("أُسقطت %d عنصراً منتهياً بعد حفظها في الأرشيف", len(items) - len(kept))
     return kept
 
 def load_pages():
     """الصفحات المخزنة؛ عند أول تشغيل تُحفظ الصفحات الافتراضية للمشروع."""
-    pages = _read_json(PAGES_FILE, None)
+    pages = _read_json(PAGES_FILE, None, expected_type=list, fail_closed=True)
     if not pages:
         pages = [dict(p) for p in DEFAULT_PAGES]
         try:
@@ -1059,43 +1205,108 @@ def verify_upload(youtube, video_id, requested_privacy, sched_time=None, log_cb=
 
 
 def finalize_video(path, log_cb=None):
-    """يعيد تغليف المقطع: faststart + حذف كل البيانات الوصفية المسرّبة، بلا إعادة ترميز."""
+    """يعيد تغليف المقطع إلى ملف جديد؛ الفشل لا يعيد مسار المصدر كأنه نجاح."""
+    source_path = os.path.abspath(os.fspath(path or ""))
+    if not os.path.isfile(source_path) or os.path.islink(source_path):
+        raise PipelineFailure(
+            "تنظيف الفيديو", "source_file_invalid",
+            "ملف المصدر غير موجود أو ليس ملفاً عادياً.",
+            "تحقق من الملف المحلي ثم أعد المحاولة.",
+        )
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
-        return path
-    out_path = os.path.splitext(path)[0] + ".clean.mp4"
-    if os.path.abspath(out_path) == os.path.abspath(path):
-        out_path = os.path.splitext(path)[0] + ".finalized.mp4"
-    output_directory = os.path.dirname(os.path.abspath(path))
+        raise PipelineFailure(
+            "تنظيف الفيديو", "ffmpeg_missing",
+            "FFmpeg غير مثبت، لذلك لم يُنظّف الفيديو.",
+            "ثبّت FFmpeg وأضفه إلى PATH قبل إعادة المحاولة.",
+        )
+    out_path = os.path.splitext(source_path)[0] + ".clean.mp4"
+    if os.path.abspath(out_path) == source_path:
+        out_path = os.path.splitext(source_path)[0] + ".finalized.mp4"
+    if os.path.lexists(out_path):
+        raise PipelineFailure(
+            "تنظيف الفيديو", "output_exists",
+            "ملف الإخراج المنظف موجود مسبقاً ولن يُستبدل.",
+            "اختر اسماً جديداً أو انقل ملف الإخراج السابق يدوياً.",
+        )
+    output_directory = os.path.dirname(source_path)
     try:
         fd, temporary_path = tempfile.mkstemp(
-            prefix=f".{os.path.basename(path)}.", suffix=".mp4", dir=output_directory
+            prefix=f".{os.path.basename(source_path)}.", suffix=".mp4", dir=output_directory
         )
-    except OSError:
-        logging.exception("تعذر إنشاء ملف مؤقت لتنظيف الفيديو")
-        return path
-    os.close(fd)
-    cmd = [ffmpeg_bin, "-y", "-v", "error", "-i", path,
+        os.close(fd)
+    except OSError as error:
+        raise PipelineFailure(
+            "تنظيف الفيديو", "temporary_file_error",
+            redact_sensitive_text(error),
+            "تحقق من صلاحيات المجلد ومساحة القرص ثم أعد المحاولة.",
+        ) from error
+    cmd = [ffmpeg_bin, "-y", "-v", "error", "-i", source_path,
            "-c", "copy", "-movflags", "+faststart", "-map_metadata", "-1",
            "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", temporary_path]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-        if proc.returncode == 0 and os.path.isfile(temporary_path) and os.path.getsize(temporary_path) > 0:
-            os.replace(temporary_path, out_path)
-            if log_cb:
-                log_cb("نُظّف المقطع: faststart + إزالة البيانات الوصفية.")
-            return out_path
-        logging.warning("فشل تنظيف ffmpeg على %s: %s", path, (proc.stderr or "")[:400])
-        return path
-    except Exception:
-        logging.exception("فشل غير متوقع في تنظيف المقطع")
-        return path
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        except subprocess.TimeoutExpired as error:
+            raise PipelineFailure(
+                "تنظيف الفيديو", "ffmpeg_timeout",
+                "انتهت مهلة FFmpeg قبل اكتمال التنظيف.",
+                "تحقق من الملف والموارد المحلية ثم أعد المحاولة.",
+                retryable=True,
+            ) from error
+        except OSError as error:
+            raise PipelineFailure(
+                "تنظيف الفيديو", "ffmpeg_unavailable",
+                redact_sensitive_text(error),
+                "تحقق من تثبيت FFmpeg ومسار PATH ثم أعد المحاولة.",
+            ) from error
+        if proc.returncode != 0:
+            detail = redact_sensitive_text((proc.stderr or "").strip())[:300]
+            raise PipelineFailure(
+                "تنظيف الفيديو", "ffmpeg_failed",
+                detail or "أعاد FFmpeg رمز فشل.",
+                "أعد فحص الملف المصدر وتأكد من دعم FFmpeg للحاوية.",
+            )
+        if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) <= 0:
+            raise PipelineFailure(
+                "تنظيف الفيديو", "ffmpeg_output_invalid",
+                "لم يُنشئ FFmpeg ملف إخراج صالحاً.",
+                "أعد فحص الملف المصدر قبل المحاولة مجدداً.",
+            )
+        try:
+            os.link(temporary_path, out_path)
+            os.unlink(temporary_path)
+        except FileExistsError as error:
+            raise PipelineFailure(
+                "تنظيف الفيديو", "output_exists",
+                "ظهر ملف إخراج بالاسم نفسه أثناء التنظيف؛ لم يُستبدل.",
+                "اختر اسماً جديداً ثم أعد المحاولة.",
+            ) from error
+        except OSError as error:
+            raise PipelineFailure(
+                "تنظيف الفيديو", "output_commit_failed",
+                redact_sensitive_text(error),
+                "تحقق من دعم الروابط الصلبة وصلاحيات المجلد ثم أعد المحاولة.",
+            ) from error
+        if os.name == "posix" and not restrict_file_permissions(out_path):
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+            raise PipelineFailure(
+                "تنظيف الفيديو", "output_permissions_failed",
+                "تعذر تقييد أذونات ملف الإخراج.",
+                "تحقق من صلاحيات المجلد ثم أعد المحاولة.",
+            )
+        if log_cb:
+            log_cb("نُظّف المقطع: faststart + إزالة البيانات الوصفية.")
+        return out_path
     finally:
         try:
             if os.path.exists(temporary_path):
                 os.unlink(temporary_path)
-        except OSError:
-            logging.warning("تعذر حذف ملف ffmpeg المؤقت %s", temporary_path)
+        except OSError as error:
+            logging.warning("تعذر حذف ملف FFmpeg المؤقت: %s", redact_sensitive_text(error))
 
 
 def _selenium_proxy_server(proxy_url):
@@ -1123,14 +1334,7 @@ def init_driver(headless=True, log_cb=None):
     options = Options()
     options.add_argument("--start-maximized")
     options.add_argument("--disable-notifications")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--disable-infobars")
     options.add_argument("--lang=ar")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-    options.add_argument(f"user-agent={ua}")
     if headless:
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
@@ -1147,11 +1351,7 @@ def init_driver(headless=True, log_cb=None):
                 log_cb(str(error))
             return None
     try:
-        driver = webdriver.Chrome(options=options)
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
-        })
-        return driver
+        return webdriver.Chrome(options=options)
     except Exception as e:
         logging.error("Driver init error: %s", e)
         if log_cb:
@@ -1160,6 +1360,11 @@ def init_driver(headless=True, log_cb=None):
 
 def get_reels(driver, fb_page, scroll_times, video_limit, log_cb=None):
     """السحب عبر المتصفح، مع إنهاء التنقل المتعذر بدلاً من تعليق الدورة."""
+    fb_page = safe_facebook_page_url(fb_page)
+    if not fb_page:
+        if log_cb:
+            log_cb("رابط صفحة Facebook غير صالح؛ لم يُفتح في المتصفح.")
+        return None
     page_timeout = _facebook_page_load_timeout()
     try:
         driver.set_page_load_timeout(page_timeout)
@@ -1330,9 +1535,14 @@ class _YtDlpQuietLogger:
 
 def scrape_links_fast(page_url, limit, log_cb=None, cookies_file=None):
     """سحب سريع عبر yt-dlp من دون متصفح. يعيد None عند الفشل ليُستخدم المتصفح."""
+    page_url = safe_facebook_page_url(page_url)
+    if not page_url:
+        if log_cb:
+            log_cb("رابط صفحة Facebook غير صالح؛ لم يُمرر إلى yt-dlp.")
+        return None
     # yt-dlp لا يدعم صفحات القوائم (/reels، /videos) — يدعم روابط المقطعات فقط.
     # التحويل المبكر للمتصفح يوفّر 45 ثانية مهلة لكل صفحة بدل فشل مضمون.
-    lowered = (page_url or "").lower()
+    lowered = page_url.lower()
     if re.search(r"facebook\.com/[^/?]+/(reels?|videos)/?(\?|$)", lowered) and "/reel/" not in lowered and "/watch" not in lowered:
         if log_cb:
             log_cb(f"السحب السريع لا يدعم صفحات القوائم — متصفح مباشرة: {page_url}")
@@ -1411,42 +1621,62 @@ def scrape_links_fast(page_url, limit, log_cb=None, cookies_file=None):
 
 def get_youtube(account_name, secrets_file=None, allow_interactive=True):
     sf = _app_path(secrets_file or CLIENT_SECRETS_FILE)
+    token_file = _app_path(f"{sanitize_account_name(account_name)}_token.json")
+    if os.path.islink(sf) or os.path.islink(token_file):
+        return None, "مسار OAuth أو ملف token رابط رمزي؛ اختر ملفاً محلياً عادياً في الإعدادات المتقدمة."
     if os.path.isfile(sf):
         _harden_secret_file(sf)
-    token_file = _app_path(f"{sanitize_account_name(account_name)}_token.json")
     creds = None
     if os.path.exists(token_file):
         try:
             with open(token_file, "r", encoding="utf-8") as token_source:
-                stored_scopes = set(json.load(token_source).get("scopes") or [])
+                token_data = json.load(token_source)
+            stored_scopes = set(token_data.get("scopes") or []) if isinstance(token_data, dict) else set()
             if set(SCOPES).issubset(stored_scopes):
                 creds = Credentials.from_authorized_user_file(token_file, SCOPES)
             else:
                 logging.info("أذونات YouTube تغيّرت؛ سيُطلب تسجيل موافقة جديد للقراءة والرفع.")
-        except Exception:
-            creds = None
+        except Exception as error:
+            logging.warning("ملف تفويض YouTube غير صالح أو غير قابل للقراءة: %s", redact_sensitive_text(error))
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-            except Exception:
+            except Exception as error:
+                logging.warning("تعذر تحديث تفويض YouTube: %s", redact_sensitive_text(error))
                 creds = None
         elif creds and creds.expired:
-            # An expired access token without a refresh token must trigger consent again.
             creds = None
         if creds is not None and not creds.valid:
             creds = None
         if not creds:
+            if not os.path.isfile(sf):
+                return None, f"ملف OAuth المحلي {os.path.basename(sf)} مفقود؛ اختره في الإعدادات المتقدمة."
             if not allow_interactive:
                 return None, "لا يوجد تفويض YouTube صالح للتشغيل الآلي. افتح الواجهة وسجّل الدخول أولاً."
-            if not os.path.exists(sf):
-                return None, f"ملف {os.path.basename(sf)} مفقود"
-            flow = InstalledAppFlow.from_client_secrets_file(sf, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(token_file, "w") as f:
-            f.write(creds.to_json())
-    _harden_secret_file(token_file)
-    return build("youtube", "v3", credentials=creds), None
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(sf, SCOPES)
+                creds = flow.run_local_server(port=0)
+            except Exception as error:
+                detail = redact_sensitive_text(error)[:240]
+                return None, f"فشل تفويض YouTube. تحقق من ملف OAuth واتصال المتصفح ثم أعد المحاولة. {detail}"
+        if not creds or not creds.valid:
+            return None, "لم يُرجع OAuth تفويضاً صالحاً؛ لم يبدأ أي طلب رفع. أعد الموافقة ثم تحقق من الحساب."
+        try:
+            token_data = json.loads(creds.to_json())
+            if not isinstance(token_data, dict) or not token_data.get("token"):
+                raise ValueError("OAuth returned incomplete token data")
+            _write_json(token_file, token_data)
+        except Exception as error:
+            logging.error("تعذر حفظ تفويض YouTube محلياً بأمان: %s", redact_sensitive_text(error))
+            return None, "تمت الموافقة لكن تعذر حفظ token محلياً بأمان؛ تحقق من صلاحيات مجلد التطبيق."
+    try:
+        _harden_secret_file(token_file)
+        service = build("youtube", "v3", credentials=creds)
+    except Exception as error:
+        detail = redact_sensitive_text(error)[:240]
+        return None, f"تعذر إنشاء اتصال YouTube بعد المصادقة. تحقق من الشبكة والصلاحيات. {detail}"
+    return service, None
 
 def _resolve_downloaded_file(info, ydl):
     """يعثر على ملف الفيديو الفعلي بعد الدمج، لا على الاسم المتوقع فقط."""
@@ -1472,50 +1702,93 @@ class StopRequested(Exception):
     """يُرفع من داخل خيط العمل عندما يطلب المستخدم الإيقاف."""
 
 
-def _cleanup_artifacts(*paths):
-    """يحذف الملفات المؤقتة والمجزأة الناتجة عن محاولة تنزيل فاشلة."""
-    for path in paths:
-        if not path:
-            continue
-        stem = os.path.splitext(path)[0]
-        targets = {path, stem + ".part", stem + ".ytdl"}
-        targets.update(glob.glob(stem + ".f*"))
-        targets.update(glob.glob(stem + ".*.part"))
-        targets.update(glob.glob(stem + ".*.ytdl"))
-        for target in targets:
-            try:
-                if os.path.isfile(target):
-                    os.remove(target)
-            except OSError as error:
-                logging.warning("تعذر حذف ملف مؤقت %s: %s", target, error)
+def _safe_download_slug(source_id):
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", str(source_id or "video"))[:80] or "video"
 
 
-def _downloaded_candidates(info, ydl=None):
-    """كل المسارات المحتملة لملف التنزيل (للحذف والتقاط الملف)."""
-    if info is None:
-        return []
-    candidates = []
-    for item in info.get("requested_downloads") or []:
-        if isinstance(item, dict):
-            candidates.extend([item.get("filepath"), item.get("_filename")])
-    candidates.extend([info.get("filepath"), info.get("_filename")])
-    if ydl is not None:
+def _cleanup_download_attempt(attempt_dir, output_dir):
+    if not attempt_dir or os.path.islink(attempt_dir):
+        return
+    root = os.path.realpath(output_dir)
+    candidate = os.path.abspath(attempt_dir)
+    if os.path.realpath(os.path.dirname(candidate)) != root:
+        return
+    if not os.path.basename(candidate).startswith(".fb2yt-"):
+        return
+    try:
+        shutil.rmtree(candidate)
+    except OSError as error:
+        logging.warning("تعذر تنظيف مجلد محاولة التنزيل المؤقت: %s", redact_sensitive_text(error))
+
+
+def _promote_downloaded_file(file_path, attempt_dir, output_dir, source_id):
+    if not file_path or os.path.islink(file_path) or not os.path.isfile(file_path):
+        raise FileNotFoundError("لم يُعثر على ملف تنزيل عادي صالح.")
+    root = os.path.realpath(attempt_dir)
+    source = os.path.realpath(file_path)
+    if os.path.commonpath((root, source)) != root:
+        raise OSError("رفض نقل ملف تنزيل خارج مجلد المحاولة المؤقت.")
+    extension = os.path.splitext(source)[1].lower()
+    if not re.fullmatch(r"\.[a-z0-9]{1,10}", extension):
+        raise OSError("تعذر تحديد امتداد ملف الفيديو الناتج.")
+    attempt_name = os.path.basename(attempt_dir).removeprefix(".fb2yt-")
+    base = f"fb2yt-{_safe_download_slug(source_id)}-{attempt_name}"
+    destination = os.path.join(output_dir, base + extension)
+    while os.path.lexists(destination):
+        destination = os.path.join(output_dir, f"{base}-{os.urandom(6).hex()}{extension}")
+    try:
+        os.link(source, destination)
+        os.unlink(source)
+    except OSError:
+        if os.path.lexists(destination):
+            raise
+        os.rename(source, destination)
+    if os.name == "posix" and not restrict_file_permissions(destination):
         try:
-            candidates.append(ydl.prepare_filename(info))
-        except Exception:
+            os.unlink(destination)
+        except OSError:
             pass
-    return [c for c in candidates if c]
+        raise OSError("تعذر تقييد أذونات ملف الفيديو المحلي.")
+    return destination
+
+
+def _cleanup_promoted_download(path, output_dir):
+    if not path or os.path.islink(path):
+        return
+    candidate = os.path.abspath(path)
+    root = os.path.realpath(output_dir)
+    if not os.path.basename(candidate).startswith("fb2yt-"):
+        return
+    try:
+        if os.path.commonpath((root, os.path.realpath(candidate))) != root:
+            return
+        os.unlink(candidate)
+    except (OSError, ValueError) as error:
+        logging.warning("تعذر تنظيف تنزيل مرحلي غير مكتمل: %s", redact_sensitive_text(error))
 
 
 def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_tags=False,
-                   cookies_file=None, stop_event=None, omit_source_page_name=True):
-    """ينزّل رابط فيسبوك مع تحويل reel إلى صيغة watch التي يدعمها yt-dlp."""
+                   cookies_file=None, stop_event=None, omit_source_page_name=True, output_dir=None):
+    """ينزّل المقطع إلى مجلد محاولة خاص، ثم ينقله إلى اسم فريد بعد اكتمال التنزيل."""
     original_url = (url or "").strip()
     download_url = canonicalize_facebook_video_url(original_url)
     if not download_url:
-        if log_cb:
-            log_cb("تخطّيت رابطاً لا يطابق صيغة فيديو فيسبوك مدعومة.")
-        return None
+        raise PipelineFailure(
+            "رابط Facebook", "unsupported_facebook_url",
+            "الرابط ليس رابط فيديو Facebook صالحاً أو مدعوماً.",
+            "تحقق من رابط Reel أو Watch أو Share، ثم أعد إضافته.",
+        )
+    output_dir = os.path.abspath(os.fspath(output_dir or VIDEO_DIRECTORY))
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        if not os.path.isdir(output_dir):
+            raise OSError("output path is not a directory")
+    except OSError as error:
+        raise PipelineFailure(
+            "تهيئة مجلد الفيديو", "output_directory_unavailable",
+            redact_sensitive_text(error),
+            "اختر مجلداً محلياً قابلاً للكتابة في الإعدادات المتقدمة.",
+        ) from error
     logger = _YtDlpQuietLogger()
     ffmpeg_available = bool(shutil.which("ffmpeg"))
     format_selector = (
@@ -1526,7 +1799,7 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
         log_cb("FFmpeg غير متاح؛ أستخدم صيغة فيديو مدمجة مسبقاً لتفادي فشل دمج الصوت والصورة.")
     ydl_opts = {
         "format": format_selector,
-        "outtmpl": os.path.join(VIDEO_DIRECTORY, "%(id)s.%(ext)s"),
+        "outtmpl": os.path.join(output_dir, "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
@@ -1551,82 +1824,132 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
 
     ydl_opts["progress_hooks"] = [stop_hook]
 
-    for attempt in range(1, retries + 1):
-        info = None
+    try:
+        attempts = max(1, min(int(retries), 10))
+    except (TypeError, ValueError):
+        raise PipelineFailure(
+            "إعداد التنزيل", "invalid_retry_count",
+            "عدد المحاولات غير صالح.",
+            "أدخل عدداً صحيحاً بين 1 و10 في الإعدادات.",
+        ) from None
+    source_id = facebook_media_id(download_url) or hashlib.sha256(download_url.encode("utf-8")).hexdigest()[:16]
+    for attempt in range(1, attempts + 1):
+        attempt_dir = None
         file_path = None
         logger.last_error = ""
+        promoted_path = None
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            attempt_dir = tempfile.mkdtemp(
+                prefix=f".fb2yt-{_safe_download_slug(source_id)}-", dir=output_dir
+            )
+            attempt_options = dict(ydl_opts)
+            attempt_options["outtmpl"] = os.path.join(attempt_dir, "%(id)s.%(ext)s")
+            with yt_dlp.YoutubeDL(attempt_options) as ydl:
                 info = ydl.extract_info(download_url, download=True)
+                if not isinstance(info, dict):
+                    raise ValueError("لم يُرجع المستخرج بيانات فيديو قابلة للتحقق.")
                 file_path = _resolve_downloaded_file(info, ydl)
                 if not file_path:
-                    raise FileNotFoundError("اكتمل الاستخراج لكن لم يُعثر على ملف MP4 الناتج.")
-
-                # يحافظ على المصدر الأصلي ليظهر في مراجعة الحقوق والوصف.
-                source_names = [page_name]
-                for extra_name in (info.get("uploader"), info.get("channel"), info.get("uploader_id")):
-                    if extra_name:
-                        source_names.append(extra_name)
-                title = prepare_public_title(
-                    info.get("title", ""),
-                    source_names,
-                    remove_hashtags=remove_tags,
-                    omit_source_page_name=omit_source_page_name,
-                )
-                description = sanitize_public_text(
-                    info.get("description") or "",
-                    keep_newlines=True,
-                )
-                # The canonical URL retains the video ID; dropping the query from /watch
-                # would turn attribution into a generic Facebook page link.
-                source_url = download_url
-                source_label = next((str(name).strip() for name in source_names
-                                     if str(name or "").strip()), "")
-                if source_label:
-                    attribution = f"المصدر الأصلي: {source_label}"
-                    if source_url:
-                        attribution += f"\nرابط المقطع الأصلي: {source_url}"
-                    description = "\n\n".join(part for part in (description, attribution) if part)
-                size_mb = round(os.path.getsize(file_path) / (1024 ** 2), 1)
-                if log_cb:
-                    log_cb(f"تحميل ناجح: {title[:40]}... ({size_mb} MB)")
-                logging.info("اكتمل تنزيل الفيديو: %s", file_path)
-                return {
-                    "file": file_path,
-                    "title": title,
-                    "desc": description,
-                    "source_names": source_names,
-                    "source_page": source_label,
-                    "source_url": source_url,
-                    "size_mb": size_mb,
-                    "duration": info.get("duration", 0),
-                }
+                    raise FileNotFoundError("اكتمل الاستخراج لكن لم يُعثر على ملف الفيديو الناتج.")
+                file_path = _promote_downloaded_file(file_path, attempt_dir, output_dir, source_id)
+                promoted_path = file_path
+            _cleanup_download_attempt(attempt_dir, output_dir)
+            size_bytes = os.path.getsize(file_path)
+            if size_bytes <= 0:
+                raise ValueError("ملف التنزيل الناتج فارغ.")
+            source_names = [page_name]
+            for extra_name in (info.get("uploader"), info.get("channel"), info.get("uploader_id")):
+                if extra_name:
+                    source_names.append(extra_name)
+            title = prepare_public_title(
+                info.get("title", ""),
+                source_names,
+                remove_hashtags=remove_tags,
+                omit_source_page_name=omit_source_page_name,
+            )
+            description = sanitize_public_text(info.get("description") or "", keep_newlines=True)
+            source_label = next((str(name).strip() for name in source_names
+                                 if str(name or "").strip()), "")
+            description = ensure_source_attribution(description, source_label, download_url, log_cb)
+            try:
+                duration = float(info.get("duration") or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            size_mb = round(size_bytes / (1024 ** 2), 1)
+            if log_cb:
+                log_cb(f"اكتمل تنزيل الملف والتحقق من وجوده: {title[:40]}... ({size_mb} MB)")
+            logging.info("اكتمل تنزيل ملف فيديو مرحلي إلى المجلد المحلي.")
+            promoted_path = None
+            return {
+                "file": file_path,
+                "title": title,
+                "desc": description,
+                "source_names": source_names,
+                "source_page": source_label,
+                "source_url": download_url,
+                "size_mb": size_mb,
+                "duration": duration,
+            }
         except StopRequested:
-            _cleanup_artifacts(file_path, *_downloaded_candidates(info))
+            _cleanup_promoted_download(promoted_path, output_dir)
+            _cleanup_download_attempt(attempt_dir, output_dir)
+            raise
+        except PipelineFailure:
+            _cleanup_promoted_download(promoted_path, output_dir)
+            _cleanup_download_attempt(attempt_dir, output_dir)
             raise
         except Exception as error:
             error_text = " ".join(part for part in (str(error), logger.last_error) if part).strip()
-            _cleanup_artifacts(file_path, *_downloaded_candidates(info))
-            if "unsupported url" in error_text.lower():
-                logging.info("تجاوز رابطاً غير مدعوم من yt-dlp: %s", download_url)
-                if log_cb:
-                    log_cb("yt-dlp لا يدعم هذا المقطع؛ تخطّيته دون إعادة محاولة الشبكة.")
-                return None
-            logging.exception("فشل تنزيل الفيديو %s في المحاولة %s", download_url, attempt)
+            _cleanup_promoted_download(promoted_path, output_dir)
+            _cleanup_download_attempt(attempt_dir, output_dir)
+            normalized_error = error_text.lower()
+            safe_cause = redact_sensitive_text(error_text or type(error).__name__)[:300]
+            if "unsupported url" in normalized_error:
+                raise PipelineFailure(
+                    "استخراج Facebook", "unsupported_facebook_url",
+                    "yt-dlp لا يدعم صيغة هذا الرابط.",
+                    "استخدم رابط Reel أو Watch أو Share مباشر، ولا تتجاوز قيود المنصة.",
+                ) from error
+            if any(marker in normalized_error for marker in (
+                "checkpoint", "captcha", "verify you are", "security check",
+                "login required", "not logged in", "sign in to confirm",
+            )):
+                raise PipelineFailure(
+                    "جلسة Facebook", "facebook_auth_required",
+                    "طلب Facebook تسجيل الدخول أو تحققاً أمنياً.",
+                    "أكمل التحقق يدوياً في Facebook وحدّث ملف الجلسة بنفسك؛ لن يتجاوز التطبيق الحماية.",
+                ) from error
             transient = is_transient_facebook_error(error) or is_transient_facebook_error(
                 RuntimeError(logger.last_error)
             )
-            if attempt < retries:
-                if log_cb and transient:
-                    log_cb(f"انقطع الاتصال بفيسبوك؛ إعادة المحاولة {attempt}/{retries} بعد {RETRY_DELAY} ثوانٍ.")
-                elif log_cb:
-                    log_cb(f"فشل التحميل؛ إعادة المحاولة ({attempt}/{retries})…")
-                time.sleep(RETRY_DELAY)
-            elif log_cb and transient:
-                log_cb("تعذر الاتصال بفيسبوك بعد عدة محاولات؛ سيبقى المقطع في قائمة الانتظار.")
-            elif log_cb:
-                log_cb("فشل التحميل نهائياً؛ سيبقى المقطع في قائمة الانتظار.")
-    return None
+            if transient and attempt < attempts:
+                if log_cb:
+                    log_cb(f"انقطع الاتصال أثناء الاستخراج؛ المحاولة {attempt}/{attempts} بعد {RETRY_DELAY} ثوانٍ.")
+                if stop_event is not None:
+                    if stop_event.wait(RETRY_DELAY):
+                        raise StopRequested()
+                else:
+                    time.sleep(RETRY_DELAY)
+                continue
+            if transient:
+                failure = PipelineFailure(
+                    "استخراج Facebook", "facebook_network_unavailable",
+                    safe_cause or "تعذر الوصول إلى Facebook بعد المحاولات المحددة.",
+                    "تحقق من الإنترنت وDNS والوكيل، ثم أعد المحاولة؛ بقي العنصر في قائمة الانتظار.",
+                    retryable=True,
+                )
+            else:
+                failure = PipelineFailure(
+                    "استخراج Facebook", "download_failed",
+                    safe_cause or "فشل استخراج الملف أو التحقق منه.",
+                    "تحقق من صلاحية الرابط والجلسة وتوفر FFmpeg وffprobe، ثم أعد المحاولة.",
+                )
+            raise failure from error
+    raise PipelineFailure(
+        "استخراج Facebook", "download_failed",
+        "انتهت المحاولات دون الحصول على ملف موثوق.",
+        "افحص السجل المحلي وأصلح سبب التنزيل قبل تحرير العنصر.",
+    )
 
 # ════════════════════════════════════════════════════
 # VIDEO PROCESSOR — تركيب الشعار بـ ffmpeg
@@ -1808,7 +2131,18 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
         if log_cb:
             log_cb("ملف الشعار غير موجود — أوقف الرفع حتى لا يُنشر الفيديو بلا شعار")
         return None
-    video_width, video_height, _ = probe_video(input_path)
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        if log_cb:
+            log_cb("تعذر تركيب الشعار: FFmpeg غير مثبت. ثبّته وأضفه إلى PATH قبل إعادة المحاولة.")
+        return None
+    try:
+        video_width, video_height, _ = probe_video(input_path)
+    except Exception as error:
+        safe_error = redact_sensitive_text(error)
+        if log_cb:
+            log_cb(f"تعذر فحص الفيديو قبل تركيب الشعار: {safe_error}. تحقق من سلامة الملف وffprobe.")
+        return None
     if video_width <= 0 or video_height <= 0:
         if log_cb:
             log_cb("تعذرت قراءة أبعاد الفيديو — أوقف الرفع")
@@ -1837,12 +2171,19 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
     margin = max(6, round(min(video_width, video_height) *
                           (0.025 if cover_old else 0.035)))
     secondary_position = "أسفل اليمين" if position_name == "أسفل اليسار" else "أسفل اليسار"
-    out_path = os.path.splitext(input_path)[0] + "_branded.mp4"
+    out_path = None
     try:
+        output_directory = os.path.dirname(os.path.abspath(input_path))
+        descriptor, out_path = tempfile.mkstemp(
+            prefix=f"{os.path.splitext(os.path.basename(input_path))[0]}_branded-",
+            suffix=".mp4",
+            dir=output_directory,
+        )
+        os.close(descriptor)
         with tempfile.TemporaryDirectory(prefix="fb-youtube-logo-") as temp_dir:
             badge_path = os.path.join(temp_dir, "logo_badge.png")
             badge.save(badge_path, format="PNG", optimize=True)
-            cmd = ["ffmpeg", "-y", "-i", input_path, "-i", badge_path]
+            cmd = [ffmpeg_bin, "-y", "-i", input_path, "-i", badge_path]
             if secondary_badge is not None:
                 secondary_path = os.path.join(temp_dir, "logo_badge_secondary.png")
                 secondary_badge.save(secondary_path, format="PNG", optimize=True)
@@ -1860,16 +2201,29 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
                     message += " مع العلامة الثانوية"
                 log_cb(message + "…")
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        if proc.returncode != 0 or not os.path.isfile(out_path):
-            logging.error("ffmpeg logo overlay failed: %s", proc.stderr[-2000:])
+        if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
+            detail = redact_sensitive_text((proc.stderr or "").strip())[:300]
+            logging.warning("ffmpeg logo overlay failed: %s", detail or "no output")
             if log_cb:
-                log_cb("فشل تركيب الشعار — لن يُرفع الفيديو بلا بطاقة الشعار")
+                log_cb(f"فشل تركيب الشعار: {detail or 'لم يُنشأ ملف صالح'}. تحقق من FFmpeg والملف والشعار.")
+            os.unlink(out_path)
+            return None
+        if os.name == "posix" and not restrict_file_permissions(out_path):
+            os.unlink(out_path)
+            if log_cb:
+                log_cb("تعذر تقييد أذونات فيديو الشعار؛ لم يُستخدم الملف.")
             return None
         return out_path
     except Exception as error:
-        logging.exception("خطأ في تركيب الشعار")
+        if out_path and os.path.isfile(out_path) and not os.path.islink(out_path):
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+        safe_error = redact_sensitive_text(error)
+        logging.warning("خطأ في تركيب الشعار: %s", safe_error)
         if log_cb:
-            log_cb(f"خطأ في تركيب الشعار: {error}")
+            log_cb(f"تعذر تركيب الشعار: {safe_error}. تحقق من FFmpeg وصلاحيات المجلد.")
         return None
 
 # ════════════════════════════════════════════════════
@@ -2111,18 +2465,39 @@ def _draw_thumbnail_title(image, title):
 
 
 def render_thumbnail_title_from_base(base_path, title, out_path=None):
-    if not os.path.isfile(base_path):
+    if not os.path.isfile(base_path) or os.path.islink(base_path):
         return None
-    out_path = out_path or base_path
+    owned_output = False
+    if out_path is None:
+        out_path = _temporary_thumbnail_path("fb-youtube-preview-title-")
+        owned_output = True
+    else:
+        out_path = os.path.abspath(os.fspath(out_path))
+        if (
+            os.path.islink(out_path)
+            or not os.path.isfile(out_path)
+            or not os.path.basename(out_path).startswith("fb-youtube-preview-")
+        ):
+            return None
+    success = False
     try:
         with Image.open(base_path) as source:
             image = source.convert("RGB")
         image = _draw_thumbnail_title(image, title)
         image.convert("RGB").save(out_path, "PNG")
+        if os.path.getsize(out_path) <= 0:
+            raise OSError("لم يُنشأ ملف معاينة صالح.")
+        success = True
         return out_path
     except Exception as error:
-        logging.warning("تعذر تحديث عنوان الصورة المصغرة: %s", error)
+        logging.warning("تعذر تحديث عنوان الصورة المصغرة: %s", redact_sensitive_text(error))
         return None
+    finally:
+        if owned_output and not success and not os.path.islink(out_path):
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
 
 
 def _temporary_png_path(prefix="fb-youtube-thumbnail-"):
@@ -2234,18 +2609,42 @@ def _capture_fallback_frame(video_path, duration, out_path, log_cb=None):
     return True
 
 
-def generate_thumbnail(video_path, title, out_path=None, log_cb=None):
-    """يلتقط أفضل لقطة من الفيديو ويكتب العنوان على شريط داكن (1280×720).
-
-    يفحص عدّة لقطات موزّعة على المقطع ويختار الأوضح (حدة وإضاءة)، ثم يرفع التباين
-    والحدة قليلاً قبل كتابة العنوان. يعيد مسار PNG جاهز للرفع، أو None عند
-    تعذر التوليد (لا يعطّل الرفع).
-    """
+def generate_thumbnail(video_path, title, out_path=None, log_cb=None, *, allow_empty_output=False):
+    """يلتقط أفضل لقطة ويكتب العنوان؛ يستخدم ملفاً فريداً ولا يستبدل ملفات موجودة."""
     if not ffmpeg_available():
         if log_cb:
-            log_cb("ffmpeg غير متوفر — تخطى توليد الصورة المصغرة")
+            log_cb("تعذر توليد الصورة المصغرة: FFmpeg غير مثبت. ثبّته وأضفه إلى PATH.")
         return None
-    out_path = out_path or os.path.splitext(video_path)[0] + "_thumb.png"
+    owned_output = False
+    if out_path is None:
+        out_path = _temporary_thumbnail_path("fb-youtube-thumbnail-")
+        owned_output = True
+    else:
+        out_path = os.path.abspath(os.fspath(out_path))
+        if os.path.lexists(out_path):
+            if (
+                not allow_empty_output
+                or os.path.islink(out_path)
+                or not os.path.isfile(out_path)
+                or os.path.getsize(out_path) != 0
+            ):
+                if log_cb:
+                    log_cb("تعذر حفظ الصورة المصغرة: ملف الإخراج موجود مسبقاً ولم يُستبدل.")
+                return None
+        else:
+            try:
+                descriptor = os.open(
+                    out_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                os.close(descriptor)
+                owned_output = True
+            except OSError as error:
+                if log_cb:
+                    log_cb(f"تعذر إنشاء ملف الصورة المصغرة: {redact_sensitive_text(error)}")
+                return None
+    success = False
     try:
         _, _, duration = probe_video(video_path)
         frame_path = _pick_best_frame(video_path, duration, log_cb=log_cb)
@@ -2268,18 +2667,34 @@ def generate_thumbnail(video_path, title, out_path=None, log_cb=None):
         if _clean_thumbnail_title(title):
             thumbnail = _draw_thumbnail_title(thumbnail, title)
             thumbnail.convert("RGB").save(out_path, "PNG")
+        if not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
+            raise OSError("لم يُنشأ ملف صورة مصغّرة صالح.")
+        if os.name == "posix" and not restrict_file_permissions(out_path):
+            raise OSError("تعذر تقييد أذونات ملف الصورة المصغّرة.")
+        success = True
         return out_path
     except Exception as error:
-        logging.warning("خطأ في توليد الصورة المصغرة: %s", error)
+        safe_error = redact_sensitive_text(error)
+        logging.warning("خطأ في توليد الصورة المصغرة: %s", safe_error)
         if log_cb:
-            log_cb(f"خطأ في توليد الصورة المصغرة: {error}")
+            log_cb(f"تعذر توليد الصورة المصغرة: {safe_error}. تحقق من الملف وFFmpeg ثم أعد المحاولة.")
         return None
+    finally:
+        if owned_output and not success and out_path and not os.path.islink(out_path):
+            try:
+                os.unlink(out_path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.warning("تعذر حذف الصورة المصغّرة الجزئية: %s", redact_sensitive_text(error))
 
 
 def create_thumbnail_preview(video_path, title, log_cb=None):
     base_path = _temporary_thumbnail_path("fb-youtube-preview-base-")
     preview_path = _temporary_thumbnail_path("fb-youtube-preview-")
-    if not generate_thumbnail(video_path, "", out_path=base_path, log_cb=log_cb):
+    if not generate_thumbnail(
+        video_path, "", out_path=base_path, log_cb=log_cb, allow_empty_output=True
+    ):
         remove_thumbnail_preview(base_path, preview_path)
         return None, None
     if not render_thumbnail_title_from_base(base_path, title, out_path=preview_path):
@@ -2289,14 +2704,22 @@ def create_thumbnail_preview(video_path, title, log_cb=None):
 
 
 def remove_thumbnail_preview(*paths):
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    allowed_prefixes = ("fb-youtube-preview-", "fb-youtube-thumbnail-", "fb-youtube-thumb-")
     for path in set(paths):
-        if path:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logging.warning("تعذر حذف صورة معاينة مؤقتة: %s", error)
+        if not path:
+            continue
+        candidate = os.path.abspath(os.fspath(path))
+        if os.path.islink(candidate) or not os.path.basename(candidate).startswith(allowed_prefixes):
+            continue
+        if os.path.realpath(os.path.dirname(candidate)) != temp_root:
+            continue
+        try:
+            os.unlink(candidate)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            logging.warning("تعذر حذف صورة معاينة مؤقتة: %s", redact_sensitive_text(error))
 
 
 YOUTUBE_THUMB_MAX_BYTES = 2_000_000  # حد YouTube للصور المصغرة 2MB
@@ -2433,27 +2856,82 @@ def find_hot_segment(rms_by_second, clip_seconds=SHORTS_CLIP_SECONDS,
 
 
 def cut_shorts_clip(source_path, start, duration, out_path=None, log_cb=None):
-    """يقص مقطع قصير بإعادة ترميز نظيفة (faststart). يعيد المسار أو None."""
-    if not ffmpeg_available():
+    """يقص نسخة مؤقتة فريدة ولا يستبدل أي ملف موجود."""
+    source_path = os.path.abspath(os.fspath(source_path or ""))
+    if os.path.islink(source_path) or not os.path.isfile(source_path):
+        if log_cb:
+            log_cb("تعذر قص Shorts: ملف المصدر غير موجود أو ليس ملفاً عادياً.")
         return None
-    out_path = out_path or os.path.splitext(source_path)[0] + "_shorts.mp4"
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        if log_cb:
+            log_cb("تعذر قص Shorts: FFmpeg غير مثبت. ثبّته وأضفه إلى PATH.")
+        return None
     try:
-        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-               "-ss", str(start), "-t", str(duration), "-i", source_path,
+        start_value = float(start)
+        duration_value = float(duration)
+    except (TypeError, ValueError, OverflowError):
+        if log_cb:
+            log_cb("تعذر قص Shorts: مدة البداية أو القص غير صالحة.")
+        return None
+    if not math.isfinite(start_value) or not math.isfinite(duration_value) or start_value < 0 or duration_value <= 0:
+        if log_cb:
+            log_cb("تعذر قص Shorts: مدة البداية أو القص غير صالحة.")
+        return None
+    owned_output = False
+    if out_path is None:
+        output_directory = os.path.dirname(source_path)
+        prefix = f"{os.path.splitext(os.path.basename(source_path))[0]}_shorts-"
+        try:
+            descriptor, out_path = tempfile.mkstemp(
+                prefix=prefix, suffix=".mp4", dir=output_directory
+            )
+            os.close(descriptor)
+            owned_output = True
+        except OSError as error:
+            if log_cb:
+                log_cb(f"تعذر إنشاء ملف Shorts مؤقت: {redact_sensitive_text(error)}")
+            return None
+    else:
+        out_path = os.path.abspath(os.fspath(out_path))
+        if os.path.lexists(out_path):
+            if log_cb:
+                log_cb("تعذر قص Shorts: ملف الإخراج موجود مسبقاً ولم يُستبدل.")
+            return None
+        owned_output = True
+    success = False
+    try:
+        cmd = [ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+               "-ss", str(start_value), "-t", str(duration_value), "-i", source_path,
                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                "-c:a", "aac", "-movflags", "+faststart", out_path]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        if proc.returncode != 0 or not os.path.isfile(out_path):
-            logging.warning("فشل قص نسخة Shorts: %s", (proc.stderr or "")[-500:])
+        if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
+            detail = redact_sensitive_text((proc.stderr or "").strip())[-300:]
+            logging.warning("فشل قص نسخة Shorts: %s", detail or "لم يُنشأ ملف صالح")
             if log_cb:
-                log_cb("فشل قص النسخة القصيرة — تابعنا العمل الأساسي")
+                log_cb(f"فشل قص Shorts: {detail or 'لم يُنشأ ملف صالح'}. تحقق من FFmpeg والملف ثم أعد المحاولة.")
             return None
+        if os.name == "posix" and not restrict_file_permissions(out_path):
+            if log_cb:
+                log_cb("تعذر تقييد أذونات ملف Shorts؛ لم يُستخدم.")
+            return None
+        success = True
         return out_path
     except Exception as error:
-        logging.warning("خطأ في قص نسخة Shorts: %s", error)
+        safe_error = redact_sensitive_text(error)
+        logging.warning("خطأ في قص نسخة Shorts: %s", safe_error)
         if log_cb:
-            log_cb(f"خطأ في قص النسخة القصيرة: {error}")
+            log_cb(f"خطأ في قص Shorts: {safe_error}. تحقق من FFmpeg والملف ثم أعد المحاولة.")
         return None
+    finally:
+        if owned_output and not success and out_path and not os.path.islink(out_path):
+            try:
+                os.unlink(out_path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logging.warning("تعذر حذف ملف Shorts الجزئي: %s", redact_sensitive_text(error))
 
 
 def _read_history():
@@ -2567,47 +3045,133 @@ def next_publish_time(min_delay, max_delay):
     save_state(state)
     return pub
 
-def validate_media(path, log_cb=None):
-    """يفحص سلامة المقطع بـ ffprobe بمنطق متساهل.
+def validate_media(path, log_cb=None, *, expected_duration=None):
+    def reject(code, cause, action):
+        details = {"error": code, "cause": cause, "action": action}
+        if log_cb:
+            log_cb(f"فشل فحص ملف الفيديو: {cause}. {action}")
+        return False, details
 
-    يعيد (صالح؟, تفاصيل). فرق مهم عن probe_video: إن **فشل تشغيل ffprobe نفسه**
-    أو لم يكن مثبتاً، نعتبر المقطع مقبولاً (unknown) ولا نرفضه — الرفض فقط عند
-    نجاح الفحص وظهور أنه بلا مسار فيديو أو بمدة صفرية.
-    """
-    if not os.path.isfile(path):
-        return False, {"error": "missing-file"}
+    if not path or os.path.islink(path) or not os.path.isfile(path):
+        return reject("missing-file", "ملف التنزيل غير موجود أو ليس ملفاً عادياً.",
+                      "أعد تنزيل المصدر قبل محاولة الرفع.")
+    try:
+        file_size = os.path.getsize(path)
+    except OSError:
+        return reject("unreadable-file", "تعذرت قراءة حجم الملف محلياً.",
+                      "تحقق من صلاحيات المجلد ومساحة القرص ثم أعد التنزيل.")
+    if file_size <= 0:
+        return reject("empty-file", "ملف التنزيل فارغ.",
+                      "أعد تنزيل المصدر قبل محاولة الرفع.")
+    if file_size > 256 * 1024**3:
+        return reject("file-too-large", "تجاوز الملف الحد الأقصى المسموح به لرفع YouTube.",
+                      "استخدم ملفاً أصغر من 256 GB.")
+    if os.path.basename(path).lower().endswith((".part", ".ytdl", ".partial", ".tmp")):
+        return reject("partial-file", "امتداد الملف يدل على تنزيل جزئي.",
+                      "انتظر اكتمال التنزيل ثم أعد الفحص.")
     ffprobe_bin = shutil.which("ffprobe")
     if not ffprobe_bin:
-        if log_cb:
-            log_cb("ℹffprobe غير مثبت؛ سيتخطى فحص سلامة المقطع.")
-        return True, {}
+        return reject("ffprobe-missing", "ffprobe غير مثبت، لذلك لا يمكن إثبات سلامة الملف.",
+                      "ثبّت FFmpeg الذي يتضمن ffprobe وأضفه إلى PATH، ثم أعد التشغيل.")
+
     try:
         proc = subprocess.run(
-            [ffprobe_bin, "-v", "error",
-             "-show_entries", "format=duration,size:stream=codec_type,codec_name,width,height",
+            [ffprobe_bin, "-v", "error", "-show_entries",
+             "format=duration,size,format_name:stream=codec_type,codec_name,width,height",
              "-of", "json", path],
             capture_output=True, text=True, timeout=60,
         )
-        if proc.returncode != 0 or not (proc.stdout or "").strip():
-            # تعذّر الفحص نفسه — لا نرفض المقطع بسبب أداة الفحص.
-            logging.warning("تعذر فحص %s (ffprobe rc=%s)", path, proc.returncode)
-            return True, {}
+    except subprocess.TimeoutExpired:
+        return reject("ffprobe-timeout", "انتهت مهلة فحص الملف.",
+                      "افحص الملف أو أعد تنزيله قبل إعادة المحاولة.")
+    except OSError:
+        return reject("ffprobe-unavailable", "تعذر تشغيل ffprobe.",
+                      "تحقق من تثبيت FFmpeg ومسار PATH ثم أعد التشغيل.")
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        detail = redact_sensitive_text((proc.stderr or "").strip())[:240]
+        cause = f"رفض ffprobe الملف أو لم يُرجع بيانات صالحة{': ' + detail if detail else ''}."
+        return reject("ffprobe-failed", cause,
+                      "أعد تنزيل الملف من المصدر؛ لن يُرسل ملف غير متحقق إلى YouTube.")
+    try:
         data = json.loads(proc.stdout)
-    except Exception as error:
-        logging.warning("تعذر فحص %s: %s", path, error)
-        return True, {}
-
-    streams = data.get("streams") or []
-    has_video = any(s.get("codec_type") == "video" for s in streams)
-    duration = float((data.get("format") or {}).get("duration") or 0)
-    problems = []
-    if not has_video:
-        problems.append("لا يوجد مسار فيديو")
-    if duration <= 0:
-        problems.append("مدة غير صالحة")
-    if problems:
-        return False, {"problems": problems, "duration": duration}
-    return True, {"duration": duration}
+    except (TypeError, json.JSONDecodeError):
+        return reject("ffprobe-invalid-json", "أعاد ffprobe بيانات غير قابلة للتحليل.",
+                      "تحقق من سلامة تثبيت FFmpeg وأعد فحص الملف.")
+    if not isinstance(data, dict):
+        return reject("ffprobe-invalid-result", "بنية نتيجة ffprobe غير صالحة.",
+                      "تحقق من سلامة تثبيت FFmpeg وأعد فحص الملف.")
+    streams = data.get("streams")
+    media_format = data.get("format")
+    if not isinstance(streams, list) or not isinstance(media_format, dict):
+        return reject("ffprobe-incomplete-result", "نتيجة ffprobe لا تتضمن المسارات أو الحاوية.",
+                      "أعد تنزيل الملف ثم أعد فحصه.")
+    video_streams = [stream for stream in streams
+                     if isinstance(stream, dict) and stream.get("codec_type") == "video"]
+    if not video_streams:
+        return reject("video-stream-missing", "لا يحتوي الملف على مسار فيديو.",
+                      "اختر مصدراً يعيد ملف فيديو صالحاً ثم أعد المحاولة.")
+    video_stream = video_streams[0]
+    try:
+        width = int(video_stream.get("width") or 0)
+        height = int(video_stream.get("height") or 0)
+        duration = float(media_format.get("duration") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return reject("invalid-media-metadata", "بيانات المدة أو الأبعاد غير صالحة.",
+                      "أعد تنزيل الملف من المصدر ثم أعد فحصه.")
+    if not math.isfinite(duration) or duration <= 0 or width <= 0 or height <= 0:
+        return reject("invalid-media-metadata", "المدة أو أبعاد الفيديو صفرية أو غير محدودة.",
+                      "أعد تنزيل الملف من المصدر ثم أعد فحصه.")
+    if duration > 12 * 60 * 60:
+        return reject("duration-too-long", "تجاوزت مدة الفيديو الحد الأقصى ليوتيوب البالغ 12 ساعة.",
+                      "قصّر الفيديو قبل محاولة الرفع.")
+    extension = os.path.splitext(path)[1].lower()
+    format_names = {part.strip().lower() for part in str(media_format.get("format_name") or "").split(",")}
+    accepted_formats = {
+        ".mp4": {"mov", "mp4", "m4a", "3gp", "3g2", "mj2"},
+        ".m4v": {"mov", "mp4"},
+        ".mov": {"mov", "mp4"},
+        ".3gp": {"mov", "3gp", "3g2", "mj2"},
+        ".3gpp": {"mov", "3gp", "3g2", "mj2"},
+        ".avi": {"avi"},
+        ".wmv": {"asf"},
+        ".asf": {"asf"},
+        ".flv": {"flv"},
+        ".webm": {"matroska", "webm"},
+        ".mkv": {"matroska", "webm"},
+        ".mpg": {"mpeg", "mpegvideo", "mpegts"},
+        ".mpeg": {"mpeg", "mpegvideo", "mpegts"},
+        ".ts": {"mpegts"},
+        ".m2ts": {"mpegts"},
+        ".ogg": {"ogg"},
+        ".ogv": {"ogg"},
+    }
+    expected_formats = accepted_formats.get(extension)
+    if not expected_formats or not format_names.intersection(expected_formats):
+        return reject("unsupported-container", "حاوية الفيديو غير معروفة أو لا تطابق امتداد الملف.",
+                      "استخدم MP4 أو WebM أو صيغة يدعمها YouTube ثم أعد الفحص.")
+    try:
+        reported_size = int(media_format.get("size") or file_size)
+    except (TypeError, ValueError, OverflowError):
+        reported_size = file_size
+    if reported_size <= 0 or abs(reported_size - file_size) > max(1024 * 1024, file_size // 100):
+        return reject("size-mismatch", "حجم الملف الذي أبلغ عنه ffprobe لا يطابق الملف المحلي.",
+                      "أعد تنزيل الملف للتحقق من عدم كونه جزئياً.")
+    if expected_duration:
+        try:
+            expected = float(expected_duration)
+        except (TypeError, ValueError, OverflowError):
+            expected = 0.0
+        if math.isfinite(expected) and expected > 0 and abs(duration - expected) > max(3.0, expected * 0.05):
+            return reject("duration-mismatch", "مدة الملف تختلف كثيراً عن مدة المصدر المتوقعة.",
+                          "أعد تنزيل الملف أو راجع المصدر قبل الرفع.")
+    return True, {
+        "duration": duration,
+        "size": file_size,
+        "width": width,
+        "height": height,
+        "format": sorted(format_names),
+        "codec": str(video_stream.get("codec_name") or ""),
+    }
 
 
 def _insert_to_playlist(youtube, playlist_id, video_id, log_cb=None):
@@ -2642,14 +3206,48 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
         if log_cb:
             log_cb("أُوقف النشر قبل احتساب الحصة: " + "؛ ".join(publication_errors))
         return "PUBLICATION_APPROVAL_REQUIRED"
-    upload_title = normalize_youtube_title(video_data.get("title"))
+    try:
+        retry_limit = int(retries)
+    except (TypeError, ValueError, OverflowError):
+        if log_cb:
+            log_cb("عدد محاولات الرفع غير صالح؛ لم يبدأ طلب YouTube.")
+        return UPLOAD_NOT_STARTED
+    if not 1 <= retry_limit <= 10:
+        if log_cb:
+            log_cb("عدد محاولات الرفع يجب أن يكون بين 1 و10؛ لم يبدأ طلب YouTube.")
+        return UPLOAD_NOT_STARTED
+    raw_title = video_data.get("title")
+    if not isinstance(raw_title, str):
+        if log_cb:
+            log_cb("أُوقف الرفع قبل الإرسال لأن العنوان ليس نصاً صالحاً.")
+        return "INVALID_TITLE"
+    raw_title = raw_title.strip()
+    if len(raw_title) > YOUTUBE_TITLE_MAX and (publication_approved or content_review_required):
+        if log_cb:
+            log_cb("أُوقف الرفع: العنوان الذي تمت مراجعته يتجاوز حد YouTube؛ اختصره وأعد مراجعته.")
+        return "INVALID_TITLE"
+    upload_title = normalize_youtube_title(raw_title)
     if not upload_title:
         if log_cb:
             log_cb("أُوقف الرفع قبل إرسال الطلب لأن العنوان فارغ بعد تنظيفه.")
         return "INVALID_TITLE"
-    if upload_title != video_data.get("title"):
+    if upload_title != raw_title and (publication_approved or content_review_required):
+        if log_cb:
+            log_cb("تغيّر العنوان عند التنظيف؛ يلزم عرضه للمراجعة مجدداً قبل الرفع.")
+        return "INVALID_TITLE"
+    if upload_title != raw_title:
         logging.info("نُظّف عنوان الرفع أو قُصّ إلى حد YouTube المسموح.")
     video_data["title"] = upload_title
+    description = video_data.get("desc", "")
+    if not isinstance(description, str):
+        if log_cb:
+            log_cb("أُوقف الرفع قبل الإرسال لأن الوصف ليس نصاً صالحاً.")
+        return "INVALID_DESCRIPTION"
+    if len(description) > YOUTUBE_DESCRIPTION_MAX:
+        if log_cb:
+            log_cb(f"أُوقف الرفع: الوصف يتجاوز {YOUTUBE_DESCRIPTION_MAX} حرفاً؛ اختصره وأعد مراجعته.")
+        return "INVALID_DESCRIPTION"
+    video_data["desc"] = description
     effective_tags = normalize_youtube_tags(tags or ["Facebook", "Reel"], log_cb)
     if content_review_required:
         caption = build_review_caption(video_data.get("desc", ""), effective_tags)
@@ -2676,12 +3274,13 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
         body["status"]["privacyStatus"] = "private"
         body["status"]["publishAt"] = sched_time.astimezone(timezone.utc).isoformat()
 
-    if not os.path.isfile(video_data["file"]):
-        message = f"ملف الفيديو غير موجود بعد التنزيل: {video_data['file']}"
+    file_path = video_data.get("file") if isinstance(video_data, dict) else None
+    if not isinstance(file_path, str) or not file_path or not os.path.isfile(file_path):
+        message = "ملف الفيديو غير موجود أو غير صالح؛ لم يبدأ طلب YouTube."
         logging.error(message)
         if log_cb:
-            log_cb(f"{message}")
-        return None
+            log_cb(message)
+        return UPLOAD_NOT_STARTED
 
     def wait_or_stop(seconds):
         if stop_event is None:
@@ -2692,7 +3291,7 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
             log_cb("أُوقف الرفع بناءً على طلب المستخدم.")
         return stopped
 
-    for attempt in range(1, max(0, int(retries)) + 1):
+    for attempt in range(1, retry_limit + 1):
         if stop_event is not None and stop_event.is_set():
             return UPLOAD_NOT_STARTED
         if quota_manager is not None and not quota_manager.can_afford():
@@ -2715,8 +3314,8 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
             if kind in {"auth", "fatal"}:
                 if log_cb:
                     log_cb(f"رفض YouTube طلب الرفع: {str(error)[:200]}")
-                return "UPLOAD_REJECTED"
-            if attempt < retries:
+                return UPLOAD_REJECTED
+            if attempt < retry_limit:
                 delay = min(_backoff_seconds(attempt), 30)
                 if log_cb:
                     log_cb(f"تعذّر تجهيز طلب الرفع؛ إعادة المحاولة {attempt}/{retries} بعد {int(delay)} ثانية.")
@@ -2725,10 +3324,10 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 continue
             if log_cb:
                 log_cb("تعذّر تجهيز طلب الرفع؛ لم يُرسل الفيديو.")
-            return None
+            return UPLOAD_NOT_STARTED
         except Exception as error:
             logging.exception("تعذّر تجهيز طلب YouTube")
-            if attempt < retries:
+            if attempt < retry_limit:
                 delay = min(_backoff_seconds(attempt), 30)
                 if log_cb:
                     log_cb(f"تعذّر تجهيز طلب الرفع؛ إعادة المحاولة {attempt}/{retries} بعد {int(delay)} ثانية.")
@@ -2737,7 +3336,7 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 continue
             if log_cb:
                 log_cb(f"تعذّر تجهيز طلب الرفع: {error}")
-            return None
+            return UPLOAD_NOT_STARTED
 
         try:
             if before_upload is not None:
@@ -2779,7 +3378,7 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 if kind in {"auth", "fatal"}:
                     if log_cb:
                         log_cb(f"رفض YouTube طلب الرفع: {str(error)[:200]}")
-                    return "UPLOAD_REJECTED"
+                    return UPLOAD_REJECTED
                 chunk_failures += 1
                 if chunk_failures > MAX_CHUNK_RETRIES:
                     if log_cb:
@@ -2822,10 +3421,11 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 if wait_or_stop(1):
                     return UPLOAD_RESULT_UNKNOWN
 
-        video_id = response.get("id") if isinstance(response, dict) else None
-        if not video_id:
+        raw_video_id = response.get("id") if isinstance(response, dict) else None
+        video_id = extract_youtube_video_id(str(raw_video_id or ""))
+        if video_id is None or video_id != str(raw_video_id or ""):
             if log_cb:
-                log_cb("أنهى YouTube الجلسة دون إرجاع معرّف؛ النتيجة غير مؤكدة. تحقق من YouTube Studio قبل إعادة المحاولة.")
+                log_cb("أنهى YouTube الطلب دون إرجاع معرّف فيديو صالح من 11 حرفاً؛ النتيجة غير مؤكدة. تحقق من YouTube Studio قبل أي إعادة محاولة.")
             return UPLOAD_RESULT_UNKNOWN
         if on_confirmed is not None:
             try:
@@ -2854,7 +3454,8 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
             if log_cb:
                 log_cb(f"رُفع الفيديو؛ تعذّر التحقق من الحالة: {error}")
         return video_id
-    return None
+    return UPLOAD_NOT_STARTED
+
 
 # ════════════════════════════════════════════════════
 # UI COMPONENTS
@@ -3057,6 +3658,8 @@ class App:
         b = lambda var: "true" if var.get() else "false"
         g = lambda w: w.get()
         return {
+            ("SETTINGS", "VIDEO_DIRECTORY"): self.video_directory_e.get().strip(),
+            ("SETTINGS", "CLIENT_SECRETS_FILE"): self.client_secrets_e.get().strip(),
             ("SETTINGS", "ACCOUNT"): self.acc_var.get(),
             ("SETTINGS", "PRIVACY"): self.priv_var.get(),
             ("SETTINGS", "HEADLESS"): b(self.headless_var),
@@ -3123,10 +3726,23 @@ class App:
 
     def _save_ui_settings(self):
         try:
-            if not save_ui_values(self._collect_ui_values(), os.path.join(APP_DIRECTORY, "config.ini")):
-                self._log("تعذر حفظ الإعدادات في config.ini.")
+            saved = save_ui_values(
+                self._collect_ui_values(), os.path.join(APP_DIRECTORY, "config.ini")
+            )
+            if not saved:
+                self._log("تعذر حفظ الإعدادات في config.ini؛ لم يبدأ التشغيل.")
+                return False
+            self._log("حُفظت الإعدادات المحلية.")
+            return True
         except Exception as error:
-            self._log(f"تعذر حفظ الإعدادات: {error}")
+            safe_error = redact_sensitive_text(error)
+            self._log(f"تعذر حفظ الإعدادات: {safe_error}")
+            if not getattr(self, "_closing", False):
+                try:
+                    messagebox.showerror("تعذر حفظ الإعدادات", safe_error, parent=self.root)
+                except Exception:
+                    pass
+            return False
 
     def _save_facebook_cookie_settings(self):
         proxy_text = self.facebook_proxy_var.get().strip()
@@ -3214,6 +3830,10 @@ class App:
                 if (section, key) == ("SETTINGS", "ACCOUNT"):
                     if v in self.acc_combo["values"]:
                         self.acc_var.set(v)
+                elif (section, key) == ("SETTINGS", "VIDEO_DIRECTORY"):
+                    text(self.video_directory_e, v)
+                elif (section, key) == ("SETTINGS", "CLIENT_SECRETS_FILE"):
+                    text(self.client_secrets_e, v)
                 elif (section, key) == ("SETTINGS", "PRIVACY"):
                     if v in ("public", "private", "unlisted"):
                         self.priv_var.set(v)
@@ -3428,6 +4048,7 @@ class App:
         self.t_facebook = tk.Frame(self.nb, bg=BG)
         self.t_yt    = tk.Frame(self.nb, bg=BG)
         self.t_opts  = tk.Frame(self.nb, bg=BG)
+        self.t_advanced = tk.Frame(self.nb, bg=BG)
         self.t_studio = tk.Frame(self.nb, bg=BG)
         self.t_ai    = tk.Frame(self.nb, bg=BG)
         self.t_log   = tk.Frame(self.nb, bg=BG)
@@ -3441,6 +4062,7 @@ class App:
         self.nb.add(self.t_studio, text="  الاستوديو  ")
         self.nb.add(self.t_ai,    text="  الذكاء الاصطناعي  ")
         self.nb.add(self.t_opts,  text="  خيارات متقدمة  ")
+        self.nb.add(self.t_advanced, text="  المسارات المحلية  ")
         self.nb.add(self.t_log,   text="  السجل  ")
         self.nb.add(self.t_accs,  text="  الحسابات  ")
         self.nb.add(self.t_dash,  text="  لوحة التحكم  ")
@@ -3449,6 +4071,7 @@ class App:
         self._tab_pages()
         self._tab_youtube()
         self._tab_options()
+        self._tab_advanced()
         self._tab_studio()
         self._tab_facebook()
         self._tab_ai()
@@ -3743,7 +4366,7 @@ class App:
         ksb.pack(side="right", fill="y")
 
         r2 = tk.Frame(inn2, bg=CARD); r2.pack(fill="x", pady=(10, 0))
-        self.ai_key_e = PEntry(r2, ph="الصق مفتاح API هنا (AIza...)", width=50)
+        self.ai_key_e = PEntry(r2, ph="مفتاح API (مخفي)", width=50, show="•")
         self.ai_key_e.pack(side="left", ipady=4)
         Btn(r2, "إضافة", self._ai_key_add, ACCENT).pack(side="left", padx=8)
         Btn(r2, "حذف", self._ai_key_del, ERR).pack(side="left")
@@ -3756,7 +4379,7 @@ class App:
             self.ai_tree.delete(i)
         for i, entry in enumerate(load_ai_keys()):
             key = entry.get("key", "")
-            masked = key[:10] + "…" + key[-4:] if len(key) > 14 else key
+            masked = mask_secret(key)
             if statuses and i in statuses:
                 status = statuses[i]
             elif _iso_in_past(entry.get("exhausted_until", "")):
@@ -3890,7 +4513,7 @@ class App:
                         variable=self.tg_errors_var).pack(anchor="w", pady=2)
         r3 = tk.Frame(inn3, bg=CARD); r3.pack(fill="x", pady=6)
         tk.Label(r3, text="Bot Token:", bg=CARD, fg=TXT, width=12, anchor="e").pack(side="left")
-        self.tg_token_e = PEntry(r3, width=45); self.tg_token_e.pack(side="left", padx=8, ipady=4)
+        self.tg_token_e = PEntry(r3, width=45, show="•"); self.tg_token_e.pack(side="left", padx=8, ipady=4)
         tk.Label(r3, text="Chat ID:", bg=CARD, fg=TXT).pack(side="left")
         self.tg_chat_e = PEntry(r3, width=15); self.tg_chat_e.pack(side="left", padx=8, ipady=4)
 
@@ -3907,6 +4530,74 @@ class App:
         Btn(rm, "تحديث yt-dlp", self._update_ytdlp, "#00695c").pack(side="left", padx=15)
         tk.Label(inn5, text="فيسبوك يغيّر موقعه باستمرار — إذا توقف التحميل فجأة، حدّث yt-dlp أولاً.",
                  bg=CARD, fg=TXT2, font=FSM).pack(anchor="w", pady=(4, 0))
+
+    def _browse_video_directory(self):
+        current = self.video_directory_e.get().strip() or APP_DIRECTORY
+        selected = filedialog.askdirectory(parent=self.root, initialdir=current)
+        if selected:
+            self.video_directory_e.delete(0, "end")
+            self.video_directory_e.insert(0, selected)
+
+    def _browse_oauth_client(self):
+        current = self.client_secrets_e.get().strip() or APP_DIRECTORY
+        initialdir = current if os.path.isdir(current) else os.path.dirname(current)
+        selected = filedialog.askopenfilename(
+            parent=self.root,
+            initialdir=initialdir or APP_DIRECTORY,
+            filetypes=[("Google OAuth client JSON", "*.json"), ("JSON", "*.json")],
+        )
+        if selected:
+            self.client_secrets_e.delete(0, "end")
+            self.client_secrets_e.insert(0, selected)
+
+    def _tab_advanced(self):
+        out = tk.Frame(self.t_advanced, bg=BG)
+        out.pack(fill="both", expand=True, padx=20, pady=16)
+        sec(out, "إعدادات محلية متقدمة", "مسارات التخزين وملف عميل OAuth؛ تُحفظ في config.ini المحلي.")
+        card = mk_card(out)
+        card.pack(fill="x", pady=(0, 12))
+        inner = tk.Frame(card, bg=CARD, padx=18, pady=16)
+        inner.pack(fill="x")
+
+        tk.Label(inner, text="مجلد ملفات الفيديو:", bg=CARD, fg=TXT, width=22, anchor="e").grid(
+            row=0, column=0, sticky="e", pady=6
+        )
+        self.video_directory_e = PEntry(inner, width=62)
+        self.video_directory_e.grid(row=0, column=1, sticky="ew", padx=8, pady=6, ipady=4)
+        Btn(inner, "اختيار مجلد…", self._browse_video_directory, "#37474f").grid(row=0, column=2, padx=4)
+
+        tk.Label(inner, text="ملف عميل Google OAuth:", bg=CARD, fg=TXT, width=22, anchor="e").grid(
+            row=1, column=0, sticky="e", pady=6
+        )
+        self.client_secrets_e = PEntry(inner, width=62)
+        self.client_secrets_e.grid(row=1, column=1, sticky="ew", padx=8, pady=6, ipady=4)
+        Btn(inner, "اختيار ملف JSON…", self._browse_oauth_client, "#37474f").grid(row=1, column=2, padx=4)
+        inner.grid_columnconfigure(1, weight=1)
+
+        tk.Label(
+            inner,
+            text=(
+                "لا تعرض هذه اللوحة محتويات ملف OAuth أو رمز الجلسة. احفظ ملف العميل محلياً ولا تشاركه. "
+                "على POSIX تُقيّد أذونات ملفات الإعداد والرموز؛ على Windows احمِ حساب المستخدم والقرص."
+            ),
+            bg=CARD,
+            fg=WARN,
+            font=FSM,
+            wraplength=850,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 4))
+        tk.Label(
+            inner,
+            text="التطبيق واجهة مكتبية محلية؛ لا يفتح منفذ HTTP ولا ينشئ لوحة ويب أو خدمة عامة.",
+            bg=CARD,
+            fg=TXT2,
+            font=FSM,
+            wraplength=850,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        Btn(inner, "حفظ الإعدادات المحلية", self._save_ui_settings, ACCENT).grid(
+            row=4, column=0, columnspan=3, sticky="e", pady=(4, 0)
+        )
 
     def _tab_facebook(self):
         out = tk.Frame(self.t_facebook, bg=BG)
@@ -4378,6 +5069,17 @@ class App:
                 if decision != "uploaded":
                     messagebox.showerror("تعذر الحفظ", "تغيرت حالة العنصر؛ أعد فحص قائمة الانتظار.", parent=self.root)
                     return
+                source_record = next(
+                    (entry for entry in items if str(entry.get("id") or "").strip() == source_id), {}
+                )
+                persist_upload_receipt(
+                    source_id,
+                    video_id,
+                    account=account,
+                    url=source_record.get("url", ""),
+                    page=source_record.get("page", ""),
+                    title=source_record.get("upload_title", source_record.get("title", "")),
+                )
                 save_uploaded_id(source_id)
                 save_failed_queue(updated)
                 append_history({
@@ -4793,6 +5495,7 @@ class App:
         ).start()
 
     def _log(self, msg, replace_last=False):
+        msg = redact_sensitive_text(msg)
         if not replace_last and "pytest" not in sys.modules:
             try:
                 _configure_cli_logger().info("%s", msg)
@@ -5438,12 +6141,23 @@ class App:
             raise ValueError("إعدادات النشر تحتاج تأكيداً صريحاً:\n• " + "\n• ".join(publication_errors))
 
 
+        video_directory_value = self.video_directory_e.get().strip()
+        client_secrets_value = self.client_secrets_e.get().strip()
+        if not video_directory_value or not client_secrets_value:
+            raise ValueError("حدد مجلد الفيديو وملف عميل OAuth في تبويب المسارات المحلية.")
+        if "\x00" in video_directory_value or "\x00" in client_secrets_value:
+            raise ValueError("أحد المسارات يحتوي محرفاً غير صالح.")
+        video_directory = _app_path(video_directory_value)
+        client_secrets_file = _app_path(client_secrets_value)
+
         try:
             facebook_network_preflight = config.getboolean("WATCH", "NETWORK_PREFLIGHT", fallback=True)
         except (ValueError, configparser.Error):
             facebook_network_preflight = True
         return {
             "account": self.acc_var.get().strip(),
+            "video_directory": video_directory,
+            "client_secrets_file": client_secrets_file,
             "headless": self.headless_var.get(),
             "remove_tags": self.remove_tags_var.get(),
             "extra_description": self.desc_e.get("1.0", "end").strip(),
@@ -5508,6 +6222,27 @@ class App:
             "category": YT_CATEGORIES.get(self.cat_var.get(), "25"),
         }
 
+    def _apply_runtime_paths(self, settings):
+        global VIDEO_DIRECTORY, CLIENT_SECRETS_FILE
+        video_directory = _app_path(settings.get("video_directory") or VIDEO_DIRECTORY)
+        client_secrets_file = _app_path(settings.get("client_secrets_file") or CLIENT_SECRETS_FILE)
+        try:
+            os.makedirs(video_directory, exist_ok=True)
+            if not os.path.isdir(video_directory) or not os.access(video_directory, os.W_OK | os.X_OK):
+                raise OSError("selected video directory is not writable")
+        except OSError as error:
+            raise ValueError(
+                "تعذر استخدام مجلد الفيديو المحدد. اختر مجلداً محلياً موجوداً أو قابلاً للإنشاء والكتابة."
+            ) from error
+        VIDEO_DIRECTORY = video_directory
+        CLIENT_SECRETS_FILE = client_secrets_file
+        settings["video_directory"] = video_directory
+        settings["client_secrets_file"] = client_secrets_file
+        if not config.has_section("SETTINGS"):
+            config.add_section("SETTINGS")
+        config.set("SETTINGS", "VIDEO_DIRECTORY", video_directory)
+        config.set("SETTINGS", "CLIENT_SECRETS_FILE", client_secrets_file)
+
     def _do_start(self, watch_mode):
         if self._closing:
             return
@@ -5542,7 +6277,15 @@ class App:
             self.status_lbl.config(text="التشغيل الآلي متوقف: أكمل إعداد بوابة الحقوق", fg=WARN)
             self.nb.select(self.t_log)
             return
-        self._save_ui_settings()   # احفظ كل قيم الواجهة قبل بدء التنفيذ
+        if self._save_ui_settings() is False:
+            self.status_lbl.config(text="لم يبدأ التشغيل: تعذر حفظ الإعدادات", fg=ERR)
+            return
+        try:
+            self._apply_runtime_paths(settings)
+        except ValueError as error:
+            messagebox.showerror("مسار غير صالح", str(error), parent=self.root)
+            self._log(f"لم يبدأ التشغيل بسبب إعداد مسار غير صالح: {error}")
+            return
         self._stop.clear()
         self._watching = watch_mode
         self.start_once_btn.config(state="disabled")
@@ -5685,6 +6428,14 @@ class App:
         ctx["facebook_network_unavailable"] = False
         ctx["facebook_auth_required"] = False
         uploaded_ids = load_uploaded_ids()
+        receipts = load_upload_receipts()
+        receipt_source_ids = set(receipts)
+        for source_id in receipt_source_ids - uploaded_ids:
+            try:
+                save_uploaded_id(source_id)
+            except (OSError, RuntimeError, ValueError):
+                logging.exception("Upload receipt is authoritative; legacy uploaded-id sync failed")
+            uploaded_ids.add(source_id)
         seen_ids = load_seen_ids()
         stored_queue = load_failed_queue()
         recovered_queue, recovered_count = recover_interrupted_uploads(stored_queue, uploaded_ids)
@@ -5935,25 +6686,76 @@ class App:
 
             video_data = None
             try:
-                video_data = download_video(item["url"], item.get("page", ""), self._log,
-                                            MAX_RETRIES, settings["remove_tags"], cookies,
-                                            self._stop, settings.get("omit_source_page_name", True))
+                video_data = download_video(
+                    item["url"], item.get("page", ""), self._log,
+                    MAX_RETRIES, settings["remove_tags"], cookies,
+                    self._stop, settings.get("omit_source_page_name", True),
+                    output_dir=settings.get("video_directory", VIDEO_DIRECTORY),
+                )
             except StopRequested:
                 self._log("أُوقف التنزيل الجاري بناءً على طلب المستخدم.")
                 self._requeue_unprocessed(failed_q, process_list[index - 1:])
+                save_failed_queue(failed_q)
                 break
-            if not video_data:
+            except PipelineFailure as failure:
+                self._log(str(failure))
+                if failure.code == "facebook_auth_required":
+                    ctx["facebook_auth_required"] = True
+                    self._requeue_unprocessed(failed_q, process_list[index - 1:])
+                    save_failed_queue(failed_q)
+                    break
                 fail_count += 1
-                self._handle_failure(failed_q, seen_ids, item, "فشل التحميل", settings)
+                self._handle_failure(
+                    failed_q, seen_ids, item, failure.code, settings,
+                    failure_details=failure,
+                )
+                append_history({
+                    "source_id": item["id"], "url": item["url"],
+                    "page": item.get("page", ""), "status": failure.code,
+                    "error": str(failure), "failure_stage": failure.stage,
+                    "failure_cause": failure.cause, "next_action": failure.action,
+                })
+                continue
+            if not video_data:
+                failure = PipelineFailure(
+                    "تنزيل الفيديو", "download_missing_output",
+                    "لم يُرجع yt-dlp ملفاً صالحاً.",
+                    "تحقق من رابط Facebook والجلسة والاتصال ثم أعد المحاولة.",
+                    retryable=True,
+                )
+                self._log(str(failure))
+                fail_count += 1
+                self._handle_failure(
+                    failed_q, seen_ids, item, failure.code, settings,
+                    failure_details=failure,
+                )
                 continue
             self.stats["total_downloaded"] = self.stats.get("total_downloaded", 0) + 1
 
-            # ─── فحص سلامة المقطع (v4.9): يمنع رفع ملف تالف/جزئي ───
-            _ok_media, _media_info = validate_media(video_data["file"], self._log)
+            _ok_media, _media_info = validate_media(
+                video_data["file"], expected_duration=video_data.get("duration")
+            )
             if not _ok_media:
-                self._log(f"المقطع غير صالح ({', '.join(_media_info.get('problems', []))})؛ سيتخطى.")
+                failure = PipelineFailure(
+                    "فحص سلامة الفيديو",
+                    str(_media_info.get("error", "invalid_media")),
+                    str(_media_info.get("cause", "تعذر إثبات سلامة الملف.")),
+                    str(_media_info.get("action", "أعد التنزيل ثم أعد الفحص.")),
+                    retryable=True,
+                )
+                self._log(str(failure))
                 self._cleanup_file(video_data)
-                self._handle_failure(failed_q, seen_ids, item, "مقطع غير صالح", settings)
+                fail_count += 1
+                self._handle_failure(
+                    failed_q, seen_ids, item, failure.code, settings,
+                    failure_details=failure,
+                )
+                append_history({
+                    "source_id": item["id"], "url": item["url"],
+                    "page": item.get("page", ""), "status": failure.code,
+                    "error": str(failure), "failure_stage": failure.stage,
+                    "failure_cause": failure.cause, "next_action": failure.action,
+                })
                 continue
 
             media_hash = ""
@@ -6057,25 +6859,31 @@ class App:
             operator_gate = str(settings.get("rights_gate_mode", "strict")).strip() == "operator_confirmed"
             if operator_gate and not rights_manifest_warning \
                     and rights_record_errors(rights_record, bool(duplicate_matches)):
-                try:
-                    operator_record = build_operator_rights_record(
-                        item.get("url", ""),
-                        transformations,
-                        basis=str(settings.get("rights_operator_basis", "owned")).strip(),
-                        statement=str(settings.get("rights_operator_statement", "")).strip(),
-                        evidence_reference=str(settings.get("rights_operator_evidence", "")).strip(),
-                        duplicate_note=str(settings.get("rights_operator_statement", "")).strip(),
-                    )
-                except ValueError as error:
-                    self._log(f"إقرار المشغل غير مكتمل: {error}؛ سيُوقف الرفع حتى تصحيحه.")
+                if duplicate_matches:
+                    self._log("الإقرار العام في الإعدادات لا يحسم تشابه هذا الفيديو؛ يلزم توثيق الفرق لكل فيديو في نافذة المراجعة.")
                 else:
                     try:
-                        save_rights_record(item["id"], operator_record, rights_manifest_path)
-                    except Exception as error:
-                        logging.warning("تعذر حفظ سجل الحقوق الآلي: %s", error)
+                        operator_record = build_operator_rights_record(
+                            item.get("url", ""),
+                            transformations,
+                            basis=str(settings.get("rights_operator_basis", "owned")).strip(),
+                            statement=str(settings.get("rights_operator_statement", "")).strip(),
+                            evidence_reference=str(settings.get("rights_operator_evidence", "")).strip(),
+                        )
+                    except ValueError as error:
+                        self._log(f"إقرار المشغل غير مكتمل: {error}؛ سيُوقف الرفع حتى تصحيحه.")
                     else:
-                        rights_record = operator_record
-                        self._log("يُرفع آلياً بناءً على إقرار المشغل المحفوظ في config.ini (RIGHTS_GATE_MODE=operator_confirmed).")
+                        operator_errors = rights_record_errors(operator_record, False)
+                        if operator_errors:
+                            self._log("إقرار المشغل غير مكتمل: " + "؛ ".join(operator_errors) + "؛ سيُوقف الرفع حتى تصحيحه.")
+                        else:
+                            try:
+                                save_rights_record(item["id"], operator_record, rights_manifest_path)
+                            except Exception as error:
+                                logging.warning("تعذر حفظ سجل الحقوق الآلي: %s", error)
+                            else:
+                                rights_record = operator_record
+                                self._log("يُرفع آلياً بناءً على إقرار المشغل المحفوظ في config.ini (RIGHTS_GATE_MODE=operator_confirmed).")
             elif rights_record is None and not rights_manifest_warning and not duplicate_matches \
                     and settings.get("rights_auto_draft", True):
                 auto_record = build_auto_rights_record(item.get("url", ""), transformations)
@@ -6376,6 +7184,7 @@ class App:
             self._log(f"رفع [{ctx['account']}]: {video_data['title'][:40]}...")
             playlist_id = resolve_playlist_id(item, pages, settings)
             upload_receipt_recorded = False
+            upload_receipt_video_id = ""
             if settings.get("dry_run"):
                 self._log("DRY-RUN: توقف قبل رفع الفيديو — لن تُحتسب حصة ولن يُسجّل كمرفوع.")
                 result = "DRY_RUN"
@@ -6393,17 +7202,33 @@ class App:
                     save_failed_queue(failed_q)
 
                 def persist_upload_confirmation(youtube_video_id):
-                    nonlocal failed_q, upload_receipt_recorded
-                    upload_receipt_recorded = append_history({
+                    nonlocal failed_q, upload_receipt_recorded, upload_receipt_video_id
+                    persist_upload_receipt(
+                        item["id"], youtube_video_id,
+                        account=ctx.get("account", ""), url=item["url"],
+                        page=item.get("page", ""), title=video_data.get("title", ""),
+                    )
+                    upload_receipt_recorded = True
+                    upload_receipt_video_id = youtube_video_id
+                    uploaded_ids.add(item["id"])
+                    try:
+                        save_uploaded_id(item["id"])
+                    except (OSError, RuntimeError, ValueError):
+                        logging.exception("YouTube upload receipt saved; legacy uploaded-id sync failed")
+                    history_saved = append_history({
                         "source_id": item["id"], "url": item["url"],
                         "page": item.get("page", ""), "title": video_data.get("title", ""),
                         "account": ctx.get("account", ""),
                         "youtube_id": youtube_video_id, "status": "uploaded",
                     })
-                    save_uploaded_id(item["id"])
-                    uploaded_ids.add(item["id"])
+                    if not history_saved:
+                        self._log("تأكد الرفع وحُفظ إيصال منع التكرار؛ تعذر تحديث history.jsonl فقط.")
                     failed_q = remove_queue_item(failed_q, item["id"])
-                    save_failed_queue(failed_q)
+                    try:
+                        save_failed_queue(failed_q)
+                    except (OSError, RuntimeError, ValueError):
+                        logging.exception("YouTube upload receipt saved; queue cleanup will be recovered on next cycle")
+                        self._log("تأكد الرفع وحُفظ الإيصال؛ تعذر تنظيف القائمة محلياً، وسيُسترد ذلك من الإيصال في الدورة التالية.")
 
                 try:
                     result = upload_video(
@@ -6421,6 +7246,32 @@ class App:
                     remove_thumbnail_preview(thumbnail_base_path, thumbnail_path)
                     self._cleanup_file(video_data, branded_path)
                     raise
+            known_results = {
+                "CHANNEL_LIMIT_ERROR", "QUOTA_ERROR", "DRY_RUN",
+                "INVALID_TITLE", "INVALID_DESCRIPTION", "INVALID_TAGS",
+                "CONTENT_SAFETY_BLOCKED", "PUBLICATION_APPROVAL_REQUIRED",
+                UPLOAD_NOT_STARTED, UPLOAD_RESULT_UNKNOWN, UPLOAD_REJECTED,
+            }
+            if upload_receipt_recorded:
+                result = upload_receipt_video_id
+            elif result is None or result is False:
+                result = UPLOAD_NOT_STARTED
+            elif not isinstance(result, str):
+                result = UPLOAD_RESULT_UNKNOWN
+            elif result not in known_results:
+                confirmed_id = extract_youtube_video_id(result)
+                if confirmed_id == result:
+                    try:
+                        persist_upload_confirmation(confirmed_id)
+                    except Exception:
+                        logging.exception("Valid-looking YouTube response could not be recorded safely")
+                        self._log("أعاد YouTube معرّفاً صالحاً لكن تعذر حفظ إيصال منع التكرار؛ النتيجة غير مؤكدة ولن يُعاد الرفع تلقائياً.")
+                        result = UPLOAD_RESULT_UNKNOWN
+                    else:
+                        result = confirmed_id
+                else:
+                    self._log("أعاد upload_video نتيجة غير معروفة؛ لم تُعتبر نجاحاً ولم يُسجّل الفيديو كمرفوع.")
+                    result = UPLOAD_RESULT_UNKNOWN
             self._uiq.put(("quota", {"used": ctx["quota"].used, "limit": ctx["quota"].daily_limit}))
             if result == "CHANNEL_LIMIT_ERROR":
                 ctx["channel_limit_reached"] = True
@@ -6452,24 +7303,29 @@ class App:
                 append_history({"source_id": item["id"], "url": item["url"],
                                 "page": item.get("page", ""), "title": video_data["title"],
                                 "status": "dry_run", "error": "وضع المحاكاة — لم يُرفع"})
-            elif result == "INVALID_TITLE":
+            elif result in {"INVALID_TITLE", "INVALID_DESCRIPTION", "INVALID_TAGS"}:
                 fail_count += 1
                 remove_thumbnail_preview(thumbnail_base_path, thumbnail_path)
                 self._cleanup_file(video_data, branded_path)
+                failure_status, failure_text = {
+                    "INVALID_TITLE": ("invalid_title", "راجع العنوان النهائي واختصره أو صحح محتواه."),
+                    "INVALID_DESCRIPTION": ("invalid_description", "اختصر الوصف إلى حد YouTube ثم أعد مراجعته."),
+                    "INVALID_TAGS": ("invalid_tags", "راجع الوسوم واجعلها ضمن حد YouTube."),
+                }[result]
                 failed_q = upsert_queue_item(remove_queue_item(failed_q, item["id"]), {
                     **item,
-                    "last_error": "invalid_title",
+                    "last_error": failure_status,
                     "failed_at": item.get("failed_at") or time.time(),
-                    "upload_error": "العنوان فارغ أو غير صالح بعد التنظيف؛ راجعه قبل تحرير العنصر.",
+                    "upload_error": failure_text,
                 })
                 save_failed_queue(failed_q)
                 append_history({
                     "source_id": item["id"], "url": item["url"],
                     "page": item.get("page", ""), "title": video_data.get("title", ""),
-                    "status": "invalid_title",
-                    "error": "أُوقف الرفع قبل إرسال طلب YouTube.",
+                    "status": failure_status,
+                    "error": f"{failure_text} لم يُرسل طلب YouTube.",
                 })
-                self._log("العنوان فارغ أو غير صالح؛ حُفظ العنصر للمراجعة ولم يُرسل إلى YouTube.")
+                self._log(f"{failure_text} حُفظ العنصر للمراجعة ولم يُرسل إلى YouTube.")
             elif result == "CONTENT_SAFETY_BLOCKED":
                 fail_count += 1
                 remove_thumbnail_preview(thumbnail_base_path, thumbnail_path)
@@ -6635,107 +7491,362 @@ class App:
     # ─── أدوات العامل المساعدة ───
 
     def _make_shorts_from(self, ctx, settings, item, video_data, uploaded_ids, publish_at=None):
-        """يقص المشهد الأعلى صوتاً كنسخة Shorts إضافية ويرفعها (ميزة اختيارية)."""
-        publication_errors = validate_publication_controls(
-            settings.get("privacy", "private"),
-            bool(settings.get("schedule_enabled")),
-            False,
-            bool(settings.get("allow_public_automation")),
-            dry_run=bool(settings.get("dry_run")),
-        )
-        if publication_errors:
-            self._log("لم تُرفع نسخة Shorts: " + "؛ ".join(publication_errors))
-            return
         if self._stop.is_set():
             return
+        if settings.get("dry_run"):
+            self._log("وضع المحاكاة: لن تُنشأ أو تُرفع نسخة Shorts.")
+            return
+        review_enabled = bool(settings.get("review_before_upload"))
+        allow_public_automation = bool(settings.get("allow_public_automation"))
+        rights_manifest_path = settings.get("rights_manifest_file") or RIGHTS_MANIFEST_FILE
         clip = None
+        thumbnail_base_path = None
+        thumbnail_path = None
+        thumbnail_upload_path = None
+        shorts_source_id = f"{item['id']}_shorts"
+
+        def record(status, error="", **details):
+            try:
+                saved = append_history({
+                    "source_id": shorts_source_id,
+                    "url": redact_sensitive_text(str(item.get("url", ""))),
+                    "page": item.get("page", ""),
+                    "title": str(details.pop("title", video_data.get("title", "")))[:100],
+                    "status": status,
+                    "note": "shorts-cut",
+                    "error": redact_sensitive_text(str(error)) if error else "",
+                    **details,
+                })
+            except Exception as save_error:
+                self._log(f"تعذر حفظ history.jsonl بعد {status}: {redact_sensitive_text(str(save_error))}.")
+                return False
+            if saved is False:
+                self._log("تعذر حفظ سجل نتيجة Shorts؛ تحقق من history.jsonl. لا تُعد الرفع قبل مراجعة إيصال upload_receipts.json.")
+            return saved
+
         try:
-            duration = video_data.get("duration") or 0
+            try:
+                rights_record = get_rights_record(item["id"], rights_manifest_path)
+            except Exception as error:
+                self._log(f"تعذر قراءة سجل حقوق Shorts: {redact_sensitive_text(str(error))}؛ أصلح rights_manifest.json قبل المتابعة.")
+                record("rights_review_required", str(error))
+                return
+            rights_errors = rights_record_errors(
+                rights_record, bool(video_data.get("duplicate_matches"))
+            )
+            if not review_enabled:
+                automatic_errors = automatic_rights_preflight_errors(settings)
+                if automatic_errors or rights_errors:
+                    reason = "؛ ".join(automatic_errors + rights_errors)
+                    self._log(f"أُوقفت نسخة Shorts قبل الرفع بسبب بوابة الحقوق: {reason}. فعّل المراجعة اليدوية أو استكمل إقراراً صادقاً وسجل حقوق صالحاً.")
+                    record("rights_review_required", reason)
+                    return
+            publication_errors = validate_publication_controls(
+                settings.get("privacy", "private"),
+                bool(settings.get("schedule_enabled")),
+                review_enabled,
+                allow_public_automation,
+            )
+            if publication_errors:
+                reason = "؛ ".join(publication_errors)
+                self._log("لم تُرفع نسخة Shorts: " + reason + " عالج الإعداد ثم أعد المحاولة.")
+                record("publication_approval_required", reason)
+                return
+            duration = float(video_data.get("duration") or 0)
             if duration < SHORTS_MIN_SOURCE:
+                self._log(f"تُخطى Shorts: مدة المصدر {duration:.1f} ثانية أقل من الحد {SHORTS_MIN_SOURCE}؛ لا يلزم إجراء.")
                 return
-            source = video_data["file"]
+            source = video_data.get("file")
+            if not source or not os.path.isfile(source):
+                reason = "ملف المصدر غير موجود. أعد تنزيل المقطع وتحقق من مساحة القرص والصلاحيات."
+                self._log(reason)
+                record("media_validation_failed", reason)
+                return
             rms = _audio_rms_per_second(source)
-            seg = find_hot_segment(rms, source_duration=duration)
-            if not seg:
-                self._log("ℹلم يُعثر على مشهد بارز للقص — تخطي النسخة القصيرة.")
+            segment = find_hot_segment(rms, source_duration=duration)
+            if not segment:
+                self._log("تُخطى Shorts: لم يُكتشف مقطع صوتي صالح للقص؛ راجع الصوت أو ffmpeg.")
+                record("shorts_cut_skipped", "لم يُعثر على مقطع صالح للقص.")
                 return
-            start, span = seg
+            start, span = segment
             self._log(f"قصّ نسخة Shorts من الثانية {start} ({span} ثانية)…")
             clip = cut_shorts_clip(source, start, span, log_cb=self._log)
             if not clip:
+                reason = "تعذر قص النسخة القصيرة؛ تحقق من ffmpeg ومساحة القرص وصلاحيات مجلد الفيديوهات."
+                self._log(reason)
+                record("shorts_cut_failed", reason)
                 return
-            clip_data = dict(video_data, file=clip,
-                             title=(video_data["title"] + " #Shorts")[:100])
+            media_ok, media_info = validate_media(
+                clip, self._log, expected_duration=span
+            )
+            if not media_ok:
+                cause = media_info.get("cause", "فشل فحص ملف Shorts.")
+                action = media_info.get("action", "أعد إنشاء المقطع بعد إصلاح الملف المصدر.")
+                self._log(f"رُفضت نسخة Shorts بعد فحص الوسائط: {cause} الإجراء: {action}")
+                record("media_validation_failed", f"{cause} {action}")
+                return
+            clip_data = dict(
+                video_data,
+                file=clip,
+                title=normalize_youtube_title(
+                    str(video_data.get("title", "")) + " #Shorts"
+                ),
+            )
             clip_data.pop("content_safety_review", None)
-            shorts_tags = list(dict.fromkeys(list(settings["tags"]) + ["Shorts"]))
+            clip_data["duration"] = media_info.get("duration", span)
+            clip_data["thumbnail"] = None
+            configured_tags = settings.get("tags") or []
+            if isinstance(configured_tags, str):
+                configured_tags = [configured_tags]
+            shorts_tags = list(dict.fromkeys(list(configured_tags) + ["Shorts"]))
+            review_report = None
             if settings.get("content_review_enabled"):
                 review_report, review_status = run_policy_review(
                     clip_data, shorts_tags, settings, self._log
                 )
                 if review_status != "clear" or not isinstance(review_report, dict):
-                    append_history({
-                        "source_id": item["id"], "url": item["url"],
-                        "page": item.get("page", ""), "title": clip_data["title"],
-                        "status": "content_safety_review_required",
-                        "content_review_status": review_status,
-                        "note": "shorts-cut",
-                    })
-                    self._log("لم تُرفع نسخة Shorts؛ فشلت بوابة أمان المحتوى.")
+                    reason = f"بوابة أمان المحتوى لم تُرجع حالة clear (الحالة: {review_status}). أصلح أداة المراجعة أو راجع المقطع يدوياً."
+                    self._log(reason)
+                    record(
+                        "content_safety_review_required",
+                        reason,
+                        content_review_status=review_status,
+                        title=clip_data["title"],
+                    )
                     return
                 clip_data["content_safety_review"] = review_report
+            selected_privacy = settings.get("privacy", "private")
+            publication_approved = False
+            thumbnail_upload_path = None
+            if review_enabled:
+                if settings.get("thumbnail_enabled", True):
+                    thumbnail_base_path, thumbnail_path = create_thumbnail_preview(
+                        clip, clip_data["title"], self._log
+                    )
+                review_payload = {
+                    "title": clip_data["title"],
+                    "description": clip_data.get("desc", ""),
+                    "privacy": selected_privacy,
+                    "duration": clip_data.get("duration", span),
+                    "page": item.get("page", ""),
+                    "scheduled": bool(settings.get("schedule_enabled")),
+                    "thumbnail_path": thumbnail_path,
+                    "thumbnail_base_path": thumbnail_base_path,
+                    "duplicate_matches": video_data.get("duplicate_matches", []),
+                    "channel_index_warning": "",
+                    "rights_record": rights_record,
+                    "rights_manifest_warning": "",
+                    "source_url": item.get("url", ""),
+                    "content_review_enabled": bool(settings.get("content_review_enabled")),
+                    "dry_run": False,
+                    "content_safety_review": review_report,
+                }
+                decision = wait_for_review_decision(self._uiq, self._stop, review_payload)
+                if decision.get("action") != "approve":
+                    self._log("تُخطى رفع Shorts؛ لم يمنح المشغل موافقة صريحة.")
+                    record("operator_skipped", "لم يوافق المشغل على رفع Shorts.")
+                    return
+                clip_data["title"] = str(decision.get("title", "")).strip()
+                clip_data["desc"] = str(decision.get("description", "")).strip()
+                selected_privacy = decision.get("privacy", "private")
+                thumbnail_upload_path = decision.get("thumbnail_path")
+                clip_data["thumbnail"] = thumbnail_upload_path
+                rights_record = decision.get("rights_record")
+                rights_errors = rights_record_errors(
+                    rights_record, bool(video_data.get("duplicate_matches"))
+                )
+                if rights_errors:
+                    reason = "؛ ".join(rights_errors)
+                    self._log("لم تُرفع Shorts؛ بقيت نقاط حقوق غير مكتملة: " + reason)
+                    record("rights_review_required", reason, title=clip_data["title"])
+                    return
+                try:
+                    save_rights_record(item["id"], rights_record, rights_manifest_path)
+                except Exception as error:
+                    reason = f"تعذر حفظ الإقرار: {redact_sensitive_text(str(error))}. تحقق من صلاحيات ونسخ rights_manifest.json؛ لم يبدأ الرفع."
+                    self._log(reason)
+                    record("rights_record_save_failed", reason, title=clip_data["title"])
+                    return
+                clip_data["rights_record"] = rights_record
+                publication_approved = True
+                if settings.get("content_review_enabled"):
+                    review_report, review_status = run_policy_review(
+                        clip_data, shorts_tags, settings, self._log
+                    )
+                    if review_status != "clear" or not isinstance(review_report, dict):
+                        reason = f"التعديل النهائي لم يجتز مراجعة المحتوى (الحالة: {review_status}). راجع العنوان والوصف وأعد الفحص."
+                        self._log(reason)
+                        record(
+                            "content_safety_review_required",
+                            reason,
+                            content_review_status=review_status,
+                            title=clip_data["title"],
+                        )
+                        return
+                    clip_data["content_safety_review"] = review_report
+            elif rights_errors:
+                reason = "؛ ".join(rights_errors)
+                self._log("لم تُرفع Shorts؛ سجل الحقوق غير صالح: " + reason)
+                record("rights_review_required", reason, title=clip_data["title"])
+                return
+            if not review_enabled and settings.get("thumbnail_enabled", True):
+                thumbnail_upload_path = generate_thumbnail(
+                    clip, clip_data["title"], log_cb=self._log
+                )
+                clip_data["thumbnail"] = thumbnail_upload_path
+                if not thumbnail_upload_path:
+                    self._log("ستُرفع Shorts دون صورة مصغّرة مخصصة؛ تعذر توليدها.")
+            publication_errors = validate_publication_controls(
+                selected_privacy,
+                bool(settings.get("schedule_enabled")),
+                publication_approved,
+                allow_public_automation,
+            )
+            if publication_errors:
+                reason = "؛ ".join(publication_errors)
+                self._log("لم تُرفع Shorts قبل اجتياز بوابة النشر: " + reason)
+                record("publication_approval_required", reason, title=clip_data["title"])
+                return
+            if not clip_data["title"] or len(clip_data["title"]) > 100:
+                reason = "عنوان Shorts فارغ أو يتجاوز 100 حرف؛ عدّله في نافذة المراجعة ثم أعد المحاولة."
+                self._log(reason)
+                record("invalid_title", reason, title=clip_data["title"])
+                return
+            if len(clip_data.get("desc", "")) > YOUTUBE_DESCRIPTION_MAX:
+                reason = f"وصف Shorts يتجاوز {YOUTUBE_DESCRIPTION_MAX} حرفاً؛ اختصره قبل الرفع."
+                self._log(reason)
+                record("invalid_description", reason, title=clip_data["title"])
+                return
+            shorts_tags = normalize_youtube_tags(shorts_tags, self._log)
+            upload_receipt_recorded = False
+
+            def persist_short_receipt(youtube_id):
+                nonlocal upload_receipt_recorded
+                persist_upload_receipt(
+                    shorts_source_id,
+                    youtube_id,
+                    account=ctx.get("account", ""),
+                    url=redact_sensitive_text(str(item.get("url", ""))),
+                    page=item.get("page", ""),
+                    title=clip_data["title"],
+                )
+                save_uploaded_id(shorts_source_id)
+                upload_receipt_recorded = True
+
             result = upload_video(
-                ctx["yt"], clip_data, settings["privacy"], None,
-                shorts_tags, settings["category"],
+                ctx["yt"], clip_data, selected_privacy, None,
+                shorts_tags, settings.get("category", "22"),
                 publish_at if settings.get("schedule_enabled") else None,
                 self._log,
                 quota_manager=ctx["quota"],
                 content_review_required=bool(settings.get("content_review_enabled")),
-                allow_public_automation=bool(settings.get("allow_public_automation")),
+                publication_approved=publication_approved,
+                allow_public_automation=allow_public_automation,
+                on_confirmed=persist_short_receipt,
                 stop_event=self._stop,
             )
-            self._uiq.put(("quota", {"used": ctx["quota"].used, "limit": ctx["quota"].daily_limit}))
+            self._uiq.put(("quota", {
+                "used": ctx["quota"].used,
+                "limit": ctx["quota"].daily_limit,
+            }))
             if result == "QUOTA_ERROR":
                 ctx["quota"].mark_exhausted()
-                self._log("حصة الرفع نفدت أثناء رفع النسخة القصيرة.")
+                reason = "نفدت حصة YouTube أثناء رفع Shorts؛ انتظر التجديد اليومي ولا تكرر الرفع الآن."
+                self._log(reason)
+                record("quota_exhausted", reason, title=clip_data["title"])
                 return
-            if result in {"CONTENT_SAFETY_BLOCKED", "PUBLICATION_APPROVAL_REQUIRED"}:
-                status = (
-                    "content_safety_review_required"
-                    if result == "CONTENT_SAFETY_BLOCKED"
-                    else "publication_approval_required"
-                )
-                append_history({
-                    "source_id": item["id"], "url": item["url"],
-                    "page": item.get("page", ""), "title": clip_data["title"],
-                    "status": status, "note": "shorts-cut",
-                })
-                self._log("لم تُرفع نسخة Shorts؛ لم يجتز الفيديو فحص النشر النهائي.")
-                return
-            if result:
-                shorts_id = f"{item['id']}_shorts"
-                save_uploaded_id(shorts_id)
-                uploaded_ids.add(shorts_id)
+            confirmed_id = extract_youtube_video_id(str(result or ""))
+            if confirmed_id:
+                uploaded_ids.add(shorts_source_id)
                 bump_daily_uploads(self.stats)
-                append_history({"source_id": item["id"], "url": item["url"],
-                                "page": item.get("page", ""), "title": clip_data["title"],
-                                "account": ctx["account"], "youtube_id": result,
-                                "status": "uploaded", "note": "shorts-cut"})
-                send_telegram(settings,
-                              f"نُشرت نسخة Shorts إضافية\nhttps://youtu.be/{result}",
-                              self._log)
-            else:
-                self._log("فشل رفع النسخة القصيرة — تابعنا العمل الأساسي دون إعادتها.")
-        except Exception:
-            logging.exception("خطأ غير متوقع في قص/رفع النسخة القصيرة")
-            self._log("تعطّلت ميزة القص — تابعنا العمل الأساسي.")
+                if not upload_receipt_recorded:
+                    try:
+                        persist_short_receipt(confirmed_id)
+                    except Exception as error:
+                        save_uploaded_id(shorts_source_id)
+                        reason = (
+                            f"YouTube أكد Shorts بالمعرّف {confirmed_id}، لكن تعذر حفظ الإيصال: "
+                            f"{redact_sensitive_text(str(error))}. لا تُعد الرفع؛ طابق الفيديو يدوياً في القناة."
+                        )
+                        self._log(reason)
+                        record(
+                            "upload_confirmed_receipt_failed",
+                            reason,
+                            title=clip_data["title"],
+                            youtube_id=confirmed_id,
+                        )
+                        return
+                history_saved = record(
+                    "uploaded",
+                    title=clip_data["title"],
+                    account=ctx.get("account", ""),
+                    youtube_id=confirmed_id,
+                )
+                if history_saved is False:
+                    self._log("تأكد رفع Shorts وحُفظ إيصال YouTube، لكن تعذر تحديث سجل history.jsonl. لا تُعد الرفع؛ طابق الإيصال يدوياً.")
+                send_telegram(
+                    settings,
+                    f"نُشرت نسخة Shorts إضافية\nhttps://youtu.be/{confirmed_id}",
+                    self._log,
+                )
+                if settings.get("thumbnail_enabled", True) and thumbnail_upload_path:
+                    try:
+                        upload_thumbnail(ctx["yt"], confirmed_id, thumbnail_upload_path, self._log)
+                    except Exception as error:
+                        safe_error = redact_sensitive_text(str(error))
+                        logging.warning("تعذر رفع صورة Shorts المصغّرة: %s", safe_error)
+                        self._log(f"تعذر رفع صورة Shorts المصغّرة: {safe_error}؛ اكتمل رفع الفيديو.")
+                return
+            status_messages = {
+                "UPLOAD_RESULT_UNKNOWN": (
+                    "نتيجة رفع Shorts غير مؤكدة؛ ابحث يدوياً في YouTube وطابق upload_receipts.json قبل أي إعادة محاولة.",
+                    "upload_result_unknown",
+                ),
+                "UPLOAD_NOT_STARTED": (
+                    "لم يبدأ رفع Shorts. أصلح السبب المسجل ثم شغّل مراجعة جديدة.",
+                    "upload_not_started",
+                ),
+                "UPLOAD_REJECTED": (
+                    "رفض YouTube رفع Shorts. راجع رسالة API والخصوصية والقيود قبل إعادة المحاولة.",
+                    "upload_rejected",
+                ),
+                "CONTENT_SAFETY_BLOCKED": (
+                    "أوقفت بوابة أمان المحتوى رفع Shorts؛ أصلح تقرير المراجعة قبل المتابعة.",
+                    "content_safety_review_required",
+                ),
+                "PUBLICATION_APPROVAL_REQUIRED": (
+                    "لم يجتز Shorts بوابة موافقة النشر؛ راجع الخصوصية والموافقة قبل المتابعة.",
+                    "publication_approval_required",
+                ),
+                "INVALID_TITLE": (
+                    "عنوان Shorts غير صالح؛ اختصره إلى 100 حرف أو أقل ثم راجعه.",
+                    "invalid_title",
+                ),
+                "INVALID_DESCRIPTION": (
+                    f"وصف Shorts غير صالح؛ اختصره إلى {YOUTUBE_DESCRIPTION_MAX} حرفاً أو أقل.",
+                    "invalid_description",
+                ),
+            }
+            message, status = status_messages.get(
+                str(result),
+                (f"تعذر رفع Shorts (النتيجة: {redact_sensitive_text(str(result))}). راجع السجل قبل أي إعادة محاولة.", "upload_failed"),
+            )
+            self._log(message)
+            record(status, message, title=clip_data["title"], upload_result=redact_sensitive_text(str(result)))
+        except PipelineFailure as error:
+            message = f"فشلت معالجة Shorts ({error.code}): {redact_sensitive_text(error.cause)} الإجراء: {redact_sensitive_text(error.action)}"
+            self._log(message)
+            record("shorts_pipeline_failed", message, error_code=error.code)
+        except Exception as error:
+            message = f"فشلت معالجة Shorts: {redact_sensitive_text(str(error))}. راجع الخطأ المحلي وأصلح سببه؛ لا تُعد رفع نتيجة غير مؤكدة."
+            logging.exception("Unexpected Shorts processing failure")
+            self._log(message)
+            record("shorts_pipeline_failed", message)
         finally:
             if clip:
-                try:
-                    os.remove(clip)
-                except OSError:
-                    pass
+                self._cleanup_file({"file": clip})
+            remove_thumbnail_preview(thumbnail_base_path, thumbnail_path, thumbnail_upload_path)
 
-    # ─── أدوات العامل المساعدة ───
     def _ai_metadata(self, item, video_data, settings):
         """يولّد بيانات الفيديو بالذكاء الاصطناعي مرة واحدة لكل مقطع (كاش دائم)."""
         state = load_state()
@@ -6780,10 +7891,17 @@ class App:
             f"▫المراقبة تعمل (دورة #{self.stats.get('cycles', 0)})",
             self._log)
 
-    def _handle_failure(self, failed_q, seen_ids, item, reason, settings, count_attempt=True):
+    def _handle_failure(self, failed_q, seen_ids, item, reason, settings, count_attempt=True, failure_details=None):
         if count_attempt:
             item["attempts"] = item.get("attempts", 0) + 1
         item["last_error"] = reason
+        details = {}
+        if failure_details is not None:
+            details = {
+                "failure_stage": str(failure_details.stage)[:100],
+                "failure_cause": str(failure_details.cause)[:500],
+                "next_action": str(failure_details.action)[:500],
+            }
         if item.get("attempts", 0) >= settings["max_attempts"]:
             save_seen_id(item["id"])
             seen_ids.add(item["id"])
@@ -6793,20 +7911,22 @@ class App:
                 "last_error": "abandoned",
                 "failure_reason": reason,
                 "failed_at": item.get("failed_at") or time.time(),
+                **details,
             }
-            failed_q.append(entry)
+            failed_q[:] = upsert_queue_item(failed_q, entry)
             append_history({"source_id": item["id"], "url": item["url"],
                             "page": item.get("page", ""), "status": "abandoned",
-                            "error": f"{reason} — {item['attempts']} محاولات"})
+                            "error": f"{reason} — {item['attempts']} محاولات", **details})
             self._log(f"توقفت إعادة المحاولة تلقائياً بعد {item['attempts']} محاولات: {item['id']}؛ حرّره يدوياً بعد إصلاح السبب.")
         else:
             entry = {"id": item["id"], "url": item["url"],
                      "page": item.get("page", ""), "attempts": item["attempts"],
                      "last_error": reason,
-                     "failed_at": item.get("failed_at") or time.time()}
-            failed_q.append(entry)
+                     "failed_at": item.get("failed_at") or time.time(),
+                     **details}
+            failed_q[:] = upsert_queue_item(failed_q, entry)
             self._log(f"أُضيف لقائمة إعادة المحاولة (محاولة {item['attempts']}/{settings['max_attempts']})")
-
+        save_failed_queue(failed_q)
     def _requeue_unprocessed(self, failed_q, remaining):
         """يحفظ العناصر غير المعالجة لتلتقطها الدورة القادمة."""
         queued = {it["id"] for it in failed_q}
@@ -6822,22 +7942,31 @@ class App:
             self._log(f"أُجّل {len(remaining)} {_arabic_plural(len(remaining), 'عنصر', 'عناصر', 'عنصراً')} للدورة القادمة.")
 
     def _cleanup_file(self, video_data, branded_path=None):
-        """يحذف الملف المعالَج والأصلي (إن كانا مختلفين) دون أن يوقف أي خطأ العملية."""
         paths = {video_data.get("file", "")}
         if branded_path:
             paths.add(branded_path)
         if video_data.get("original_file"):
             paths.add(video_data["original_file"])
+        root = os.path.realpath(VIDEO_DIRECTORY)
         for path in paths:
             if not path:
                 continue
+            candidate = os.path.abspath(os.fspath(path))
+            if os.path.islink(candidate) or not os.path.basename(candidate).startswith("fb2yt-"):
+                continue
             try:
-                os.remove(path)
+                if os.path.commonpath((root, os.path.realpath(candidate))) != root:
+                    continue
+            except ValueError:
+                continue
+            try:
+                os.unlink(candidate)
             except FileNotFoundError:
                 continue
             except OSError as error:
-                logging.warning("تعذر حذف الملف المحلي: %s", error)
-                self._log(f"تعذر حذف الملف المحلي: {error}")
+                safe_error = redact_sensitive_text(error)
+                logging.warning("تعذر تنظيف ملف ناتج محلي %s: %s", os.path.basename(candidate), safe_error)
+                self._log(f"تعذر تنظيف ملف ناتج محلي {os.path.basename(candidate)}: {safe_error}")
 
     def _emit_page_status(self, page, found, new, status):
         self._uiq.put(("page_status", {
@@ -6917,6 +8046,8 @@ class App:
 # ════════════════════════════════════════════════════
 # (القسم، المفتاح، القيمة الافتراضية)
 UI_KEYS = [
+    ("SETTINGS", "VIDEO_DIRECTORY", "videos/"),
+    ("SETTINGS", "CLIENT_SECRETS_FILE", "client_secrets.json"),
     ("SETTINGS", "ACCOUNT", "account1"),
     ("SETTINGS", "PRIVACY", "private"),
     ("SETTINGS", "HEADLESS", "true"),
@@ -6984,20 +8115,14 @@ UI_KEYS = [
 ]
 
 def load_ui_values(config_path=None):
-    """يقرأ كل مفاتيح الواجهة من config.ini مع القيم الافتراضية عند الغياب."""
+    """يقرأ إعدادات الواجهة من الملف المحلي أو يستعيد آخر نسخة احتياطية صالحة."""
     if config_path is None:
         config_path = os.path.join(APP_DIRECTORY, "config.ini")
-    cfg = configparser.ConfigParser(interpolation=None)
-    try:
-        cfg.read(config_path, encoding="utf-8")
-    except OSError:
-        pass
+    cfg, recovered_from = read_config(config_path)
+    if recovered_from and os.path.abspath(recovered_from) != os.path.abspath(config_path):
+        logging.warning("استُعيد config.ini من النسخة الاحتياطية %s", recovered_from.name)
     if migrate_legacy_rights_gate_config(cfg):
-        try:
-            _write_config_atomically(cfg, config_path)
-            _harden_secret_file(config_path)
-        except OSError as error:
-            logging.warning("تعذر حفظ ترقية بوابة الحقوق: %s", error)
+        _write_config_atomically(cfg, config_path)
     out = {}
     for section, key, default in UI_KEYS:
         try:
@@ -7005,60 +8130,40 @@ def load_ui_values(config_path=None):
         except (configparser.NoSectionError, configparser.NoOptionError):
             out[(section, key)] = default
     out[("SETTINGS", "DAILY_UPLOAD_LIMIT")] = str(_daily_upload_limit_from_config(cfg))
-
     return out
 
 def save_ui_values(values, config_path=None):
-    """يكتب مفاتيح الواجهة في config.ini مع الحفاظ على باقي المفاتيح (المسارات…)."""
+    """يتحقق من الإعدادات ثم يحفظها ذرياً مع إبقاء نسخة احتياطية محلية."""
+    global config
     if config_path is None:
         config_path = os.path.join(APP_DIRECTORY, "config.ini")
-    cfg = configparser.ConfigParser(interpolation=None)
-    try:
-        cfg.read(config_path, encoding="utf-8")
-    except OSError:
-        pass
+    cfg, _ = read_config(config_path)
     for (section, key), value in values.items():
         if not cfg.has_section(section):
             cfg.add_section(section)
         cfg.set(section, key, str(value))
+    for section, key, default in UI_KEYS:
+        if not cfg.has_option(section, key):
+            if not cfg.has_section(section):
+                cfg.add_section(section)
+            cfg.set(section, key, str(default))
     if cfg.has_option("SETTINGS", "DAILY_QUOTA"):
         cfg.remove_option("SETTINGS", "DAILY_QUOTA")
-
+    errors = validate_configuration(cfg)
+    if errors:
+        raise ValueError("إعدادات غير صالحة:\n• " + "\n• ".join(errors))
     try:
         _write_config_atomically(cfg, config_path)
-        _harden_secret_file(config_path)
+        if os.path.abspath(config_path) == os.path.abspath(CONFIG_FILE):
+            config = cfg
         return True
-    except OSError as error:
-        logging.warning("تعذر حفظ config.ini: %s", error)
+    except OSError:
+        logging.warning("تعذر حفظ config.ini؛ بقي الملف السابق دون استبدال.")
         return False
 
 
 def _write_config_atomically(cfg, config_path):
-    """يستبدل ملف الإعدادات ذرياً بعد تثبيت البيانات على القرص."""
-    config_path = os.fspath(config_path)
-    directory = os.path.dirname(os.path.abspath(config_path))
-    os.makedirs(directory, exist_ok=True)
-    fd, temporary_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(config_path)}.", suffix=".tmp", dir=directory
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            cfg.write(stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_path, config_path)
-        if os.name == "posix":
-            directory_fd = os.open(directory, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    except Exception:
-        try:
-            os.unlink(temporary_path)
-        except OSError:
-            pass
-        raise
+    write_config_atomically(cfg, config_path)
 
 # ════════════════════════════════════════════════════
 # CLI MODE — تشغيل 24/7 بدون واجهة (للسيرفرات)
@@ -7224,9 +8329,11 @@ def _configure_cli_logger():
     logger.propagate = False
     log_path = os.path.abspath(os.path.join(APP_DIRECTORY, "automation.log"))
     if not any(getattr(handler, "baseFilename", None) == log_path for handler in logger.handlers):
-        handler = RotatingFileHandler(log_path, maxBytes=5_000_000, backupCount=5, encoding="utf-8")
+        handler = SecureRotatingFileHandler(
+            log_path, maxBytes=5_000_000, backupCount=5, encoding="utf-8"
+        )
         handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        logger.addHandler(handler)
+        logger.addHandler(secure_log_handler(handler))
     return logger
 
 
@@ -7245,6 +8352,7 @@ def run_cli(dry_run=False, once=False, preflight_only=False):
     cli_logger = _configure_cli_logger()
 
     def cli_log(msg, replace_last=False):
+        msg = redact_sensitive_text(msg)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{stamp}] {msg}", flush=True)
         cli_logger.info("%s", msg)

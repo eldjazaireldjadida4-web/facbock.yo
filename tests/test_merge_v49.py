@@ -39,7 +39,7 @@ def _http_error(status: int, reason: str = "") -> HttpError:
 
 
 class FakeUploadRequest:
-    def __init__(self, video_id: str = "youtube-video-id") -> None:
+    def __init__(self, video_id: str = "abcdefghijk") -> None:
         self._video_id = video_id
 
     def next_chunk(self):
@@ -104,7 +104,7 @@ def test_upload_retries_rate_limit_then_succeeds(monkeypatch, tmp_path: Path) ->
     f.write_bytes(b"video-bytes")
     monkeypatch.setattr(app.time, "sleep", lambda *_a: None)
     yt = FlakyYouTube([_http_error(429, "rateLimitExceeded"), _http_error(503, "")])
-    assert app.upload_video(yt, {"file": str(f), "title": "t", "desc": "d"}) == "youtube-video-id"
+    assert app.upload_video(yt, {"file": str(f), "title": "t", "desc": "d"}) == "abcdefghijk"
     assert yt.calls == 3
 
 
@@ -131,7 +131,7 @@ def test_upload_auth_error_no_retry(monkeypatch, tmp_path: Path) -> None:
     f.write_bytes(b"video-bytes")
     monkeypatch.setattr(app.time, "sleep", lambda *_a: None)
     yt = FlakyYouTube([_http_error(403, "")])
-    assert app.upload_video(yt, {"file": str(f), "title": "t", "desc": "d"}) == "UPLOAD_REJECTED"
+    assert app.upload_video(yt, {"file": str(f), "title": "t", "desc": "d"}) == app.UPLOAD_REJECTED
     assert yt.calls == 1
 
 
@@ -143,7 +143,7 @@ class ResumingRequest:
         self.calls += 1
         if self.calls == 1:
             raise _http_error(429, "rateLimitExceeded")
-        return None, {"id": "vid-resumed"}
+        return None, {"id": "lmnopqrstuv"}
 
 
 class ResumeYouTube:
@@ -164,13 +164,13 @@ def test_upload_resumes_after_transient_chunk_failure(monkeypatch, tmp_path: Pat
     f.write_bytes(b"video-bytes")
     monkeypatch.setattr(app.time, "sleep", lambda *_a: None)
     yt = ResumeYouTube()
-    assert app.upload_video(yt, {"file": str(f), "title": "t", "desc": "d"}) == "vid-resumed"
+    assert app.upload_video(yt, {"file": str(f), "title": "t", "desc": "d"}) == "lmnopqrstuv"
     assert yt.request.calls == 2
     assert yt.insert_calls == 1
 
 
-def test_upload_missing_file_returns_none() -> None:
-    assert app.upload_video(object(), {"file": "/no/such.mp4", "title": "t", "desc": "d"}) is None
+def test_upload_missing_file_returns_not_started() -> None:
+    assert app.upload_video(object(), {"file": "/no/such.mp4", "title": "t", "desc": "d"}) == app.UPLOAD_NOT_STARTED
 
 
 def test_playlist_failure_does_not_duplicate_upload(monkeypatch, tmp_path: Path) -> None:
@@ -197,7 +197,7 @@ def test_playlist_failure_does_not_duplicate_upload(monkeypatch, tmp_path: Path)
 
     result = app.upload_video(YT(), {"file": str(f), "title": "t", "desc": "d"},
                               playlist_id="PL1")
-    assert result == "youtube-video-id"
+    assert result == "abcdefghijk"
 
 
 # ─────────────────────────── التحقق بعد الرفع ───────────────────────────
@@ -367,7 +367,7 @@ def test_upload_enforces_title_and_total_tag_limits(monkeypatch, tmp_path: Path)
         tags=tags,
     )
     snippet = captured["body"]["snippet"]
-    assert result == "youtube-video-id"
+    assert result == "abcdefghijk"
     assert len(snippet["title"]) <= app.YOUTUBE_TITLE_MAX
     assert snippet["tags"] == ["A" * 490, "Foo Bar"]
     assert sum(app._youtube_tag_cost(tag) for tag in snippet["tags"]) + 1 == app.YOUTUBE_TAGS_MAX
@@ -377,20 +377,32 @@ def test_upload_enforces_title_and_total_tag_limits(monkeypatch, tmp_path: Path)
 def test_normalize_channel_url() -> None:
     assert app.normalize_channel_url("https://www.facebook.com/jireel") == \
         "https://www.facebook.com/jireel/reels"
-    assert "sk=reels_tab" in app.normalize_channel_url(
-        "https://www.facebook.com/profile.php?id=61554746552594")
+    assert app.normalize_channel_url("https://www.facebook.com/profile.php?id=61554746552594") == \
+        "https://www.facebook.com/profile.php?id=61554746552594&sk=reels_tab"
     assert app.normalize_channel_url("https://www.facebook.com/x/reels") == \
         "https://www.facebook.com/x/reels"
     assert app.normalize_channel_url("https://www.facebook.com/SomePage/?sk=about") == \
         "https://www.facebook.com/SomePage/reels"
-    assert app.normalize_channel_url("https://www.facebook.com/SomePage/?sk=reels_tab") == \
+    assert app.normalize_channel_url(
+        "https://www.facebook.com/SomePage/?sk=about&access_token=secret-value&ref=private") == \
+        "https://www.facebook.com/SomePage/reels"
+    assert app.normalize_channel_url(
+        "https://www.facebook.com/SomePage/?sk=reels_tab&access_token=secret-value") == \
         "https://www.facebook.com/SomePage/?sk=reels_tab"
+    with pytest.raises(ValueError):
+        app.normalize_channel_url("https://www.facebook.com/profile.php?id=not-a-number")
+    assert app.normalize_channel_url("https://m.facebook.com/pages/Example/123?sk=about") == \
+        "https://www.facebook.com/pages/Example/123?sk=reels_tab"
+    with pytest.raises(ValueError):
+        app.normalize_channel_url("https://user:secret@www.facebook.com/page")
+    with pytest.raises(ValueError):
+        app.normalize_channel_url("https://www.facebook.com:8443/page")
     with pytest.raises(ValueError):
         app.normalize_channel_url("https://www.youtube.com/x")
 
 
-def test_safe_normalize_never_raises() -> None:
-    assert app._safe_normalize_channel_url("https://youtube.com/x") == "https://youtube.com/x"
+def test_safe_normalize_rejects_non_facebook_urls_without_raising() -> None:
+    assert app._safe_normalize_channel_url("https://youtube.com/x") == ""
 
 
 def test_order_reels_dedupes_newest_first() -> None:
@@ -415,27 +427,60 @@ def test_validate_media_rejects_missing_file(tmp_path: Path) -> None:
     assert info.get("error") == "missing-file"
 
 
-def test_validate_media_is_lenient_when_probe_fails(tmp_path: Path) -> None:
-    """ملف ليس فيديو حقيقياً: ffprobe يفشل → نعتبره مقبولاً (لا نرفض بسبب أداة الفحص)."""
+def test_validate_media_rejects_corrupt_input_when_ffprobe_fails(monkeypatch, tmp_path: Path) -> None:
     fake = tmp_path / "not-a-video.mp4"
     fake.write_bytes(b"not a video")
-    ok, _info = app.validate_media(str(fake))
-    assert ok is True
+    monkeypatch.setattr(app.shutil, "which", lambda _name: "/fake/ffprobe")
+    monkeypatch.setattr(app.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=1, stdout="", stderr="invalid data"
+    ))
+
+    ok, info = app.validate_media(str(fake))
+
+    assert ok is False
+    assert info["error"] == "ffprobe-failed"
 
 
-def test_validate_media_without_ffprobe_is_lenient(monkeypatch, tmp_path: Path) -> None:
+def test_validate_media_without_ffprobe_blocks_upload(monkeypatch, tmp_path: Path) -> None:
     fake = tmp_path / "x.mp4"
-    fake.write_bytes(b"x")
+    fake.write_bytes(b"video")
     monkeypatch.setattr(app.shutil, "which", lambda _name: None)
-    ok, _info = app.validate_media(str(fake))
+
+    ok, info = app.validate_media(str(fake))
+
+    assert ok is False
+    assert info["error"] == "ffprobe-missing"
+
+
+def test_validate_media_accepts_verified_video_and_rejects_duration_mismatch(monkeypatch, tmp_path: Path) -> None:
+    fake = tmp_path / "clip.mp4"
+    fake.write_bytes(b"video")
+    result = {
+        "format": {"duration": "30", "size": "5", "format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+        "streams": [{"codec_type": "video", "codec_name": "h264", "width": 640, "height": 360}],
+    }
+    monkeypatch.setattr(app.shutil, "which", lambda _name: "/fake/ffprobe")
+    monkeypatch.setattr(app.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps(result), stderr=""
+    ))
+
+    ok, info = app.validate_media(str(fake), expected_duration=30)
+    mismatch, mismatch_info = app.validate_media(str(fake), expected_duration=90)
+
     assert ok is True
+    assert info["duration"] == 30
+    assert mismatch is False
+    assert mismatch_info["error"] == "duration-mismatch"
 
 
-def test_finalize_video_without_ffmpeg_returns_original(monkeypatch, tmp_path: Path) -> None:
+def test_finalize_video_without_ffmpeg_fails_clearly(monkeypatch, tmp_path: Path) -> None:
     f = tmp_path / "v.mp4"
     f.write_bytes(b"video")
     monkeypatch.setattr(app.shutil, "which", lambda _name: None)
-    assert app.finalize_video(str(f)) == str(f)
+    with pytest.raises(app.PipelineFailure) as failure:
+        app.finalize_video(str(f))
+    assert failure.value.code == "ffmpeg_missing"
+    assert f.read_bytes() == b"video"
 
 
 def test_finalize_video_success_returns_cleaned(monkeypatch, tmp_path: Path) -> None:
@@ -453,7 +498,7 @@ def test_finalize_video_success_returns_cleaned(monkeypatch, tmp_path: Path) -> 
     assert app.finalize_video(str(f)) == str(out)
 
 
-def test_finalize_video_failure_returns_original(monkeypatch, tmp_path: Path) -> None:
+def test_finalize_video_failure_is_reported_and_preserves_source(monkeypatch, tmp_path: Path) -> None:
     f = tmp_path / "v.mp4"
     f.write_bytes(b"video")
     monkeypatch.setattr(app.shutil, "which", lambda _name: "/fake/ffmpeg")
@@ -463,7 +508,10 @@ def test_finalize_video_failure_returns_original(monkeypatch, tmp_path: Path) ->
         return SimpleNamespace(returncode=1, stderr="boom")
 
     monkeypatch.setattr(app.subprocess, "run", fake_run)
-    assert app.finalize_video(str(f)) == str(f)
+    with pytest.raises(app.PipelineFailure) as failure:
+        app.finalize_video(str(f))
+    assert failure.value.code == "ffmpeg_failed"
+    assert f.read_bytes() == b"video"
     assert not (tmp_path / "v.clean.mp4").exists()
     assert not list(tmp_path.glob(".v.mp4.*.mp4"))
 
@@ -478,7 +526,10 @@ def test_finalize_video_timeout_removes_partial_temp_file(monkeypatch, tmp_path:
         raise subprocess.TimeoutExpired(cmd, 900)
 
     monkeypatch.setattr(app.subprocess, "run", timeout_run)
-    assert app.finalize_video(str(f)) == str(f)
+    with pytest.raises(app.PipelineFailure) as failure:
+        app.finalize_video(str(f))
+    assert failure.value.code == "ffmpeg_timeout"
+    assert f.read_bytes() == b"video"
     assert not (tmp_path / "v.clean.mp4").exists()
     assert not list(tmp_path.glob(".v.mp4.*.mp4"))
 
@@ -489,8 +540,8 @@ def test_download_hides_page_name_in_title_but_keeps_source_attribution(monkeypa
     video.write_bytes(b"video")
 
     class FakeYDL:
-        def __init__(self, _opts):
-            pass
+        def __init__(self, options):
+            self.file = Path(options["outtmpl"].replace("%(id)s.%(ext)s", "123.mp4"))
 
         def __enter__(self):
             return self
@@ -499,17 +550,18 @@ def test_download_hides_page_name_in_title_but_keeps_source_attribution(monkeypa
             return False
 
         def extract_info(self, _url, download=True):
+            self.file.write_bytes(b"video")
             return {
                 "id": "123",
                 "title": "12K views | عنوان المقطع | Elwatania TV",
                 "description": "وصف من Elwatania TV مع رابط https://fb.com/x",
                 "uploader": "Elwatania TV",
                 "duration": 30,
-                "filepath": str(video),
+                "filepath": str(self.file),
             }
 
         def prepare_filename(self, _info):
-            return str(video)
+            return str(self.file)
 
     monkeypatch.setattr(app.yt_dlp, "YoutubeDL", FakeYDL)
     url = "https://facebook.com/reel/123"
@@ -532,13 +584,13 @@ def test_download_hides_page_name_in_title_but_keeps_source_attribution(monkeypa
 
 
 def test_download_uses_muxed_fallback_when_ffmpeg_is_missing(monkeypatch, tmp_path: Path) -> None:
-    video = tmp_path / "123.mp4"
-    video.write_bytes(b"video")
+    output_dir = tmp_path / "videos"
     captured = {}
 
     class FakeYDL:
         def __init__(self, options):
             captured.update(options)
+            self.file = Path(options["outtmpl"].replace("%(id)s.%(ext)s", "123.mp4"))
 
         def __enter__(self):
             return self
@@ -547,18 +599,23 @@ def test_download_uses_muxed_fallback_when_ffmpeg_is_missing(monkeypatch, tmp_pa
             return False
 
         def extract_info(self, _url, download=True):
-            return {"id": "123", "title": "عنوان", "filepath": str(video), "duration": 30}
+            self.file.write_bytes(b"video")
+            return {"id": "123", "title": "عنوان", "filepath": str(self.file), "duration": 30}
 
         def prepare_filename(self, _info):
-            return str(video)
+            return str(self.file)
 
+    monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(output_dir))
     monkeypatch.setattr(app.shutil, "which", lambda _name: None)
     monkeypatch.setattr(app.yt_dlp, "YoutubeDL", FakeYDL)
 
-    assert app.download_video("https://www.facebook.com/reel/123") is not None
+    data = app.download_video("https://www.facebook.com/reel/123")
+
+    assert data is not None
+    assert Path(data["file"]).parent == output_dir
+    assert Path(data["file"]).is_file()
     assert captured["format"] == "best[ext=mp4]/best"
     assert "merge_output_format" not in captured
-
 
 # ─────────────────────────────────────────────
 # ميزات v4.10: صور مصغرة، قص Shorts، قوائم لكل صفحة، تغذية راجعة

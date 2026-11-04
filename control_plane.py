@@ -113,6 +113,9 @@ def deduplicate_queue_items(items: Iterable[QueueItem] | None) -> list[QueueItem
         "publication_approval_required": 80,
         "duplicate_review_required": 80,
         "rights_review_required": 80,
+        "invalid_title": 80,
+        "invalid_description": 80,
+        "invalid_tags": 80,
     }
     result: list[QueueItem] = []
     positions: dict[str, int] = {}
@@ -269,6 +272,9 @@ def split_duplicate_review_queue(
             UPLOAD_RESULT_UNKNOWN,
             UPLOAD_REJECTED,
             "abandoned",
+            "invalid_title",
+            "invalid_description",
+            "invalid_tags",
         }:
             safety_held.append(item)
         else:
@@ -294,6 +300,9 @@ def release_policy_holds(
             "rights_review_required",
             UPLOAD_REJECTED,
             "abandoned",
+            "invalid_title",
+            "invalid_description",
+            "invalid_tags",
         }:
             entry["last_error"] = ""
             count += 1

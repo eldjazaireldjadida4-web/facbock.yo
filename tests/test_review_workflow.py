@@ -56,6 +56,7 @@ def review_cycle(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "load_uploaded_ids", lambda: set())
     monkeypatch.setattr(app, "load_seen_ids", lambda: set())
     monkeypatch.setattr(app, "load_failed_queue", lambda: [])
+    monkeypatch.setattr(app, "UPLOAD_RECEIPTS_FILE", str(tmp_path / "upload_receipts.json"))
     monkeypatch.setattr(app, "save_failed_queue", lambda items: queued.extend(items))
     monkeypatch.setattr(app, "save_seen_id", seen_ids.append)
     monkeypatch.setattr(app, "save_uploaded_id", uploaded_ids.append)
@@ -321,7 +322,7 @@ def test_approval_applies_edits_and_uploads_matching_thumbnail(review_cycle, mon
     def upload(_youtube, video_data, privacy, *_args, **_kwargs):
         assert review_cycle["saved_rights"]
         captured.update(title=video_data["title"], description=video_data["desc"], privacy=privacy)
-        return "youtube-id"
+        return "abcdefghijk"
 
     monkeypatch.setattr(app, "upload_video", upload)
     result = review_cycle["worker"]._run_cycle(
@@ -413,7 +414,7 @@ def test_disabled_review_keeps_automatic_thumbnail_upload(review_cycle, monkeypa
 
     def upload(*_args, **kwargs):
         upload_options.append(kwargs)
-        return "youtube-id"
+        return "abcdefghijk"
 
     monkeypatch.setattr(app, "upload_video", upload)
     result = review_cycle["worker"]._run_cycle(
@@ -441,7 +442,7 @@ def test_scheduled_review_cannot_publish_publicly(review_cycle, monkeypatch):
     def upload(_yt, _video, privacy, *_args, **kwargs):
         uploaded_privacies.append(privacy)
         approval_flags.append(kwargs["publication_approved"])
-        return "youtube-id"
+        return "abcdefghijk"
 
     monkeypatch.setattr(app, "upload_video", upload)
     review_cycle["worker"]._run_cycle(
@@ -584,7 +585,7 @@ def test_visual_duplicate_fingerprint_requires_manual_review(review_cycle, monke
     frames = ["0000000000000000", "0000000000000001", "0000000000000003", "0000000000000007"]
     monkeypatch.setattr(app, "fetch_channel_video_index", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(app, "load_state", lambda: {"video_frame_fingerprints": [{
-        "video_id": "prior-youtube-id", "title": "Earlier clip", "duration": 30, "frames": frames,
+        "video_id": "prior-abcdefghijk", "title": "Earlier clip", "duration": 30, "frames": frames,
     }]})
     monkeypatch.setattr(app, "extract_video_fingerprint", lambda *_args, **_kwargs: frames)
     monkeypatch.setattr(app, "file_sha256", lambda *_args, **_kwargs: "new-source-hash")
@@ -605,7 +606,7 @@ def test_visual_duplicate_fingerprint_requires_manual_review(review_cycle, monke
 
     assert result == (0, 0)
     assert captured["duplicate_matches"][0]["match_type"] == "visual_fingerprint"
-    assert captured["duplicate_matches"][0]["video_id"] == "prior-youtube-id"
+    assert captured["duplicate_matches"][0]["video_id"] == "prior-abcdefghijk"
     assert uploads == []
 
 
@@ -769,7 +770,7 @@ def test_manual_edits_force_a_fresh_policy_review(review_cycle, monkeypatch):
         report = video_data["content_safety_review"]
         assert report["metadata_sha256"] == metadata_fingerprint(video_data["title"], caption)
         captured.update(title=video_data["title"], privacy=privacy)
-        return "youtube-id"
+        return "abcdefghijk"
 
     monkeypatch.setattr(app, "upload_video", upload)
     result = review_cycle["worker"]._run_cycle(
@@ -965,8 +966,8 @@ def test_upload_confirmation_is_persisted_before_thumbnail_work(review_cycle, mo
 
     def upload(*_args, **kwargs):
         events.append("youtube-confirmed")
-        kwargs["on_confirmed"]("youtube-id-001")
-        return "youtube-id-001"
+        kwargs["on_confirmed"]("abcdefghijk")
+        return "abcdefghijk"
 
     monkeypatch.setattr(app, "upload_video", upload)
 
@@ -977,7 +978,7 @@ def test_upload_confirmation_is_persisted_before_thumbnail_work(review_cycle, mo
     assert result == (1, 0)
     assert events == ["youtube-confirmed", "source-ledger", "thumbnail"]
     assert len([record for record in review_cycle["histories"] if record.get("status") == "uploaded"]) == 1
-    assert review_cycle["histories"][-1]["youtube_id"] == "youtube-id-001"
+    assert review_cycle["histories"][-1]["youtube_id"] == "abcdefghijk"
 
 
 def test_confirmed_upload_receipt_is_saved_before_cycle_cleanup(review_cycle, monkeypatch):
@@ -989,8 +990,8 @@ def test_confirmed_upload_receipt_is_saved_before_cycle_cleanup(review_cycle, mo
     monkeypatch.setattr(app, "save_failed_queue", lambda items: snapshots.append([dict(item) for item in items]))
 
     def upload(*_args, on_confirmed=None, **_kwargs):
-        on_confirmed("youtube-id-123")
-        return "youtube-id-123"
+        on_confirmed("lmnopqrstuv")
+        return "lmnopqrstuv"
 
     monkeypatch.setattr(app, "upload_video", upload)
 
@@ -1003,7 +1004,7 @@ def test_confirmed_upload_receipt_is_saved_before_cycle_cleanup(review_cycle, mo
     assert snapshots[-1] == []
     uploaded_history = [record for record in review_cycle["histories"] if record.get("status") == "uploaded"]
     assert len(uploaded_history) == 1
-    assert uploaded_history[0]["youtube_id"] == "youtube-id-123"
+    assert uploaded_history[0]["youtube_id"] == "lmnopqrstuv"
 
 
 def test_known_pre_upload_failure_does_not_leave_unknown_attempt(review_cycle, monkeypatch):
