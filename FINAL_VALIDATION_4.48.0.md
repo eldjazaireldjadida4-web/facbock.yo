@@ -27,5 +27,7 @@
 ## GitHub
 
 - الفرع: `work/reliability-hardening-2026-11-04`.
-- رابط commit وPR: سأضيفهما بعد رفع الفرع وفتح PR؛ لن تُدمج التغييرات في `main`.
+- commit: `12bb0182f40f17628fb09d159e115789cfc102a4`.
+- PR: https://github.com/eldjazaireldjadida4-web/facbock.yo/pull/1 — مفتوح على `main`، غير مدمج.
+- GitHub Actions: لا توجد فحوص مسجلة للفرع.
 - لم تُنشأ حزمة إصدار.
