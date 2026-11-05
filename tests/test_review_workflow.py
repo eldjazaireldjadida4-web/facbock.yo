@@ -789,7 +789,8 @@ def test_manual_edits_force_a_fresh_policy_review(review_cycle, monkeypatch):
     assert captured == {"title": "Approved title", "privacy": "unlisted"}
 
 
-def test_ai_title_cannot_reintroduce_source_page_name(review_cycle, monkeypatch):
+def test_ai_title_never_replaces_any_facebook_title(review_cycle, monkeypatch):
+    """Gemini لا يعيد كتابة العنوان إطلاقاً: العنوان يبقى عنوان Facebook كما هو."""
     review_cycle["settings"].update({
         "ai_enabled": True,
         "ai_rewrite_always": True,
@@ -821,8 +822,8 @@ def test_ai_title_cannot_reintroduce_source_page_name(review_cycle, monkeypatch)
     )
 
     assert result == (0, 0)
-    assert captured["title"] == "عنوان جذاب"
-    assert "Page" not in captured["title"]
+    assert captured["title"] == "Original title"
+    assert captured["description"].startswith("وصف مولد")
     assert "المصدر الأصلي: Page" in captured["description"]
     assert "https://www.facebook.com/reel/reel-1" in captured["description"]
 

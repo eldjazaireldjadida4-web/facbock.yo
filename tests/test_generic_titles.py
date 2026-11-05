@@ -57,6 +57,7 @@ def test_download_video_uses_real_title_when_extraction_returns_one(tmp_path, mo
 
 def test_download_video_replaces_generic_title_with_descriptive_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
+    monkeypatch.setattr(app, "_facebook_watch_og_title", lambda *_a, **_k: "")
     monkeypatch.setattr(app.yt_dlp, "YoutubeDL", _fake_ydl_factory("Video", "Video"))
     data = app.download_video("https://www.facebook.com/watch/?v=123",
                               page_name="الوطنية TV")
@@ -67,6 +68,7 @@ def test_download_video_replaces_generic_title_with_descriptive_fallback(tmp_pat
 
 def test_download_video_refetch_recovers_real_title(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
+    monkeypatch.setattr(app, "_facebook_watch_og_title", lambda *_a, **_k: "")
     monkeypatch.setattr(app.yt_dlp, "YoutubeDL",
                         _fake_ydl_factory("Video", "هدف رائع في المباراة"))
     data = app.download_video("https://www.facebook.com/watch/?v=123",
@@ -112,3 +114,21 @@ def test_ai_prompt_masks_generic_title_instead_of_passing_video(monkeypatch):
     assert meta and meta["title"]
     assert "العنوان الأصلي: غير متوفر" in captured["prompt"]
     assert "العنوان الأصلي: Video" not in captured["prompt"]
+
+def test_download_video_prefers_og_title_over_all_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
+    monkeypatch.setattr(
+        app, "_facebook_watch_og_title",
+        lambda *_a, **_k: "محليات 2026..الأحزاب السياسية أمام تحدي إقناع الناخبين | Elwatania TV",
+    )
+    monkeypatch.setattr(app.yt_dlp, "YoutubeDL", _fake_ydl_factory("Video", "Video"))
+    data = app.download_video("https://www.facebook.com/watch/?v=123",
+                              page_name="الوطنية TV")
+    assert "محليات 2026" in data["title"]
+    assert data["title_generic"] is False
+
+
+def test_gateway_og_titles_are_rejected_as_generic():
+    for junk in ("Discover Popular Videos Facebook", "Log into Facebook",
+                 "Content not found", "title preview"):
+        assert texttools.is_generic_title(junk), junk

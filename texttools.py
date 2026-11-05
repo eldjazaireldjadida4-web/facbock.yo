@@ -302,6 +302,18 @@ GENERIC_TITLE_VALUES = frozenset({
     "video", "videos", "facebook video", "facebook live", "live video",
     "facebook reel", "facebook reels", "reel", "reels", "reels video",
     "watch", "fb live", "مقطع فيديو", "فيديو", "بث مباشر", "فيديو مباشر",
+    # نصوص إنجليزية تتسلل من عناصر واجهة فيسبوك (aria-label ونصوص روابط)
+    # وليست عناوين حقيقية؛ كانت تمر كعنوان صالح وتُرفع إلى يوتيوب حرفياً.
+    "title", "titles", "title preview", "preview", "previews",
+    "video preview", "preview video", "play video", "playing video",
+    "watch video", "watch reel", "watch live", "live", "fb video",
+    "facebook watch", "shared video", "video post", "fullscreen",
+    "see more", "reel video", "live video replay", "video replay",
+    # صفحات Facebook العامة قد تعيد عناوين بوابة بدل عنوان المقطع
+    "discover popular videos facebook", "discover popular videos",
+    "log into facebook", "log in to facebook", "log in or sign up",
+    "facebook", "content not found", "this content isn't available right now",
+    "this content isn't available at the moment", "page not found",
 })
 
 

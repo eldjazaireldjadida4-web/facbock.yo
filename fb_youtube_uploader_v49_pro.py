@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.48.2 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.48.3 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -22,6 +22,8 @@ _check_dependencies()
 import argparse
 import time, os, re, json, logging, random, threading, queue, configparser, shutil, hashlib, unicodedata, math
 import subprocess, sys, tempfile
+import html as html_module
+import urllib.error, urllib.request
 from urllib.parse import urlparse
 import glob
 from datetime import datetime, timedelta, timezone
@@ -137,7 +139,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.48.2"
+__version__ = "4.48.3"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1780,11 +1782,49 @@ def _cleanup_promoted_download(path, output_dir):
         logging.warning("تعذر تنظيف تنزيل مرحلي غير مكتمل: %s", redact_sensitive_text(error))
 
 
+def _facebook_watch_og_title(url, timeout=20):
+    """يجلب og:title من صفحة مشاهدة فيسبوك دون تسجيل.
+    صفحات Watch/Reel تقدّم العنوان الحقيقي لزوّار externalhit حتى عندما يعيد
+    yt-dlp عنواناً عاماً؛ هذه أضمن مصدر للعنوان الأصلي. يعيد نصاً أو فراغاً."""
+    target = (url or "").strip()
+    if not target:
+        return ""
+    try:
+        request = urllib.request.Request(
+            target,
+            headers={"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            page = response.read(524288).decode("utf-8", "replace")
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        logging.info("تعذر جلب og:title من صفحة Facebook: %s", redact_sensitive_text(error))
+        return ""
+    for pattern in (
+        r'<meta[^>]+property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:title["\']',
+    ):
+        match = re.search(pattern, page, re.IGNORECASE)
+        if match:
+            return html_module.unescape(match.group(1)).strip()
+    return ""
+
+
 def _refetch_facebook_title(download_url, source_names, remove_tags, omit_source_page_name,
                             ydl_opts, log_cb=None):
     """عندما يعيد فيسبوك عنواناً عاماً («Video» أو «Facebook Live») نعيد جلب البيانات فقط
     مرة واحدة بحد مهلة أطول؛ وإن بقي العنوان عاماً بنينا عنواناً وصفياً من اسم الصفحة
     والوقت بدل رفع «Video» حرفياً إلى يوتيوب. يعيد (العنوان، هل هو عنوان بديل)."""
+    og_candidate = _facebook_watch_og_title(download_url)
+    if og_candidate:
+        candidate = prepare_public_title(
+            og_candidate, source_names,
+            remove_hashtags=remove_tags,
+            omit_source_page_name=omit_source_page_name,
+        )
+        if not is_generic_title(candidate):
+            if log_cb:
+                log_cb(f"جُلب العنوان الأصلي من بيانات صفحة Facebook: {candidate[:50]}")
+            return candidate, False
     try:
         meta_options = dict(ydl_opts)
         meta_options["skip_download"] = True
@@ -7011,12 +7051,11 @@ class App:
             # ─── تحسين الذكاء الاصطناعي (Gemini) قبل القواعد ───
             configured_tags = settings.get("tags") or []
             eff_tags = [configured_tags] if isinstance(configured_tags, str) else list(configured_tags)
+            # العنوان الأصلي من فيسبوك يُنقل كما هو (بعد التنظيف) ولا يعيد Gemini
+            # صياغته؛ الذكاء الاصطناعي يحسّن الوصف والوسوم فقط بطلب صريح من المشغل.
             if settings.get("ai_enabled"):
                 ai_meta = self._ai_metadata(item, video_data, settings)
                 if ai_meta:
-                    ai_title = normalize_generated_title(ai_meta.get("title"))
-                    if ai_title and (video_data.get("title_generic") or settings.get("ai_rewrite_always")):
-                        video_data["title"] = ai_title
                     if ai_meta.get("description"):
                         video_data["desc"] = ai_meta["description"]
                     for t in ai_meta.get("tags", []):
