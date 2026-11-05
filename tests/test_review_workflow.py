@@ -792,6 +792,7 @@ def test_manual_edits_force_a_fresh_policy_review(review_cycle, monkeypatch):
 def test_ai_title_cannot_reintroduce_source_page_name(review_cycle, monkeypatch):
     review_cycle["settings"].update({
         "ai_enabled": True,
+        "ai_rewrite_always": True,
         "omit_source_page_name": True,
         "title_optimize": False,
         "thumbnail_enabled": False,
@@ -824,6 +825,42 @@ def test_ai_title_cannot_reintroduce_source_page_name(review_cycle, monkeypatch)
     assert "Page" not in captured["title"]
     assert "المصدر الأصلي: Page" in captured["description"]
     assert "https://www.facebook.com/reel/reel-1" in captured["description"]
+
+
+def test_ai_title_does_not_replace_real_facebook_title(review_cycle, monkeypatch):
+    review_cycle["settings"].update({
+        "ai_enabled": True,
+        "ai_rewrite_always": False,
+        "omit_source_page_name": True,
+        "title_optimize": False,
+        "thumbnail_enabled": False,
+    })
+    captured = {}
+    monkeypatch.setattr(
+        review_cycle["worker"],
+        "_ai_metadata",
+        lambda *_args: {
+            "title": "عنوان جذاب",
+            "description": "وصف مولد",
+            "tags": [],
+        },
+    )
+    monkeypatch.setattr(
+        app,
+        "wait_for_review_decision",
+        lambda _uiq, _stop, payload: captured.update(payload) or {"action": "skip"},
+    )
+    monkeypatch.setattr(
+        app, "upload_video", lambda *_args, **_kwargs: pytest.fail("a skipped review must not upload")
+    )
+
+    result = review_cycle["worker"]._run_cycle(
+        review_cycle["context"], review_cycle["pages"], review_cycle["settings"], False
+    )
+
+    assert result == (0, 0)
+    assert captured["title"] == "Original title"
+    assert captured["description"].startswith("وصف مولد")
 
 
 def test_empty_cached_ai_title_preserves_source_title(review_cycle, monkeypatch):
