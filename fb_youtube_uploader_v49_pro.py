@@ -683,7 +683,8 @@ def filter_new_reels(links, uploaded_ids, seen_ids, queued_ids):
     """يوحّد صيغ روابط فيسبوك ويستبعد العناصر التي رُفعت أو دخلت الطابور سابقاً."""
     fresh, seen_here = [], set()
     for link in links:
-        canonical_url = canonicalize_facebook_video_url(str(link or ""))
+        raw = link if isinstance(link, dict) else {"url": link}
+        canonical_url = canonicalize_facebook_video_url(str(raw.get("url") or ""))
         if not canonical_url:
             continue
         reel_id = reel_id_from_url(canonical_url)
@@ -692,7 +693,11 @@ def filter_new_reels(links, uploaded_ids, seen_ids, queued_ids):
         seen_here.add(reel_id)
         if reel_id in uploaded_ids or reel_id in seen_ids or reel_id in queued_ids:
             continue
-        fresh.append({"url": canonical_url, "id": reel_id})
+        fresh.append({
+            "url": canonical_url,
+            "id": reel_id,
+            "title_hint": str(raw.get("title_hint") or "").strip()[:300],
+        })
     return fresh
 
 def cookies_arg(settings):
@@ -1432,7 +1437,13 @@ def get_reels(driver, fb_page, scroll_times, video_limit, log_cb=None):
                 canonical_url = canonicalize_facebook_video_url(href or "")
                 if canonical_url and canonical_url not in seen_links:
                     seen_links.add(canonical_url)
-                    links.append(canonical_url)
+                    hint = ""
+                    for attr in (el.get_attribute("aria-label"), el.text):
+                        candidate = sanitize_public_text(str(attr or ""), keep_newlines=False)
+                        if candidate and not is_generic_title(candidate):
+                            hint = candidate.strip()
+                            break
+                    links.append({"url": canonical_url, "title_hint": hint})
             except Exception:
                 continue
         if log_cb:
@@ -1804,7 +1815,8 @@ def _refetch_facebook_title(download_url, source_names, remove_tags, omit_source
 
 
 def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_tags=False,
-                   cookies_file=None, stop_event=None, omit_source_page_name=True, output_dir=None):
+                   cookies_file=None, stop_event=None, omit_source_page_name=True, output_dir=None,
+                   title_hint=""):
     """ينزّل المقطع إلى مجلد محاولة خاص، ثم ينقله إلى اسم فريد بعد اكتمال التنزيل."""
     original_url = (url or "").strip()
     download_url = canonicalize_facebook_video_url(original_url)
@@ -1854,9 +1866,26 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
     if ffmpeg_available:
         ydl_opts["merge_output_format"] = "mp4"
 
-    def stop_hook(_status):
+    def stop_hook(status):
         if stop_event is not None and stop_event.is_set():
             raise StopRequested()
+        if not log_cb or str(status.get("status")) != "downloading":
+            return
+        now = time.monotonic()
+        if now - stop_hook._last_beat < 30:
+            return
+        stop_hook._last_beat = now
+        try:
+            done = float(status.get("downloaded_bytes") or 0)
+            total = float(status.get("total_bytes") or status.get("total_bytes_estimate") or 0)
+        except (TypeError, ValueError):
+            done, total = 0.0, 0.0
+        if total > 0 and done > 0:
+            log_cb(f"جاري التنزيل: {min(99, int(done / total * 100))}% ({done / (1024 ** 2):.0f} MB من {total / (1024 ** 2):.0f} MB)")
+        elif done > 0:
+            log_cb(f"جاري التنزيل: {done / (1024 ** 2):.0f} MB حتى الآن…")
+
+    stop_hook._last_beat = 0.0
 
     ydl_opts["progress_hooks"] = [stop_hook]
 
@@ -1904,10 +1933,23 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
                 omit_source_page_name=omit_source_page_name,
             )
             title_generic = is_generic_title(title)
+            hint_title = ""
+            if title_generic:
+                hint_title = prepare_public_title(
+                    title_hint, source_names,
+                    remove_hashtags=remove_tags,
+                    omit_source_page_name=omit_source_page_name,
+                )
+                if not is_generic_title(hint_title):
+                    title, title_generic = hint_title, False
+                    if log_cb:
+                        log_cb(f"استُخدم العنوان الملتقط من صفحة Facebook: {title[:40]}")
             if title_generic:
                 title, title_generic = _refetch_facebook_title(
                     download_url, source_names, remove_tags, omit_source_page_name,
                     ydl_opts, log_cb)
+                if title_generic and hint_title and not is_generic_title(hint_title):
+                    title, title_generic = hint_title, False
             description = sanitize_public_text(info.get("description") or "", keep_newlines=True)
             source_label = next((str(name).strip() for name in source_names
                                  if str(name or "").strip()), "")
@@ -6230,6 +6272,7 @@ class App:
             "cookies_file": self.cookies_path_var.get().strip(),
             "dedupe_content": self.dedupe_var.get(),
             "ai_enabled": self.ai_enabled_var.get(),
+            "ai_rewrite_always": bool(getattr(self, "ai_rewrite_always_var", None) and self.ai_rewrite_always_var.get()),
             "ai_model": self.ai_model_var.get(),
             "ai_style": self.ai_style_var.get(),
             # ── الاستوديو ──
@@ -6672,6 +6715,12 @@ class App:
             self._log(f"تعذر فحص {scrape_failures} صفحة مصدر؛ اعتُبرت هذه الدورة متعثرة بدلاً من تسجيلها كنجاح فارغ.")
 
         # ─── 2) قائمة المعالجة: الفاشلون أولاً ثم الجدد ───
+        history_pages = self._history_page_index()
+        for stale in failed_q:
+            if not str(stale.get("page") or "").strip() and not str(stale.get("title_hint") or "").strip():
+                known_page = history_pages.get(str(stale.get("id") or "").strip(), "")
+                if known_page:
+                    stale["page"] = known_page
         process_list = [dict(it, retry=True) for it in failed_q] + fresh
         failed_q = held_duplicate_q
         total = len(process_list)
@@ -6733,6 +6782,7 @@ class App:
                     MAX_RETRIES, settings["remove_tags"], cookies,
                     self._stop, settings.get("omit_source_page_name", True),
                     output_dir=settings.get("video_directory", VIDEO_DIRECTORY),
+                    title_hint=item.get("title_hint", ""),
                 )
             except StopRequested:
                 self._log("أُوقف التنزيل الجاري بناءً على طلب المستخدم.")
@@ -6965,7 +7015,7 @@ class App:
                 ai_meta = self._ai_metadata(item, video_data, settings)
                 if ai_meta:
                     ai_title = normalize_generated_title(ai_meta.get("title"))
-                    if ai_title:
+                    if ai_title and (video_data.get("title_generic") or settings.get("ai_rewrite_always")):
                         video_data["title"] = ai_title
                     if ai_meta.get("description"):
                         video_data["desc"] = ai_meta["description"]
@@ -7969,6 +8019,17 @@ class App:
             failed_q[:] = upsert_queue_item(failed_q, entry)
             self._log(f"أُضيف لقائمة إعادة المحاولة (محاولة {item['attempts']}/{settings['max_attempts']})")
         save_failed_queue(failed_q)
+    def _history_page_index(self):
+        """فهرس source_id → اسم الصفحة من السجل؛ يعيد أسماء الصفحات للعناصر القديمة
+        المحفوظة قبل إضافة حقل page، حتى لا يُرفع عنوان بلا اسم مصدر."""
+        index = {}
+        for record in _read_history():
+            source_id = str(record.get("source_id") or "").strip()
+            page = str(record.get("page") or "").strip()
+            if source_id and page:
+                index[source_id] = page
+        return index
+
     def _requeue_unprocessed(self, failed_q, remaining):
         """يحفظ العناصر غير المعالجة لتلتقطها الدورة القادمة."""
         queued = {it["id"] for it in failed_q}
@@ -7977,6 +8038,7 @@ class App:
                 continue
             failed_q.append({"id": it["id"], "url": it["url"],
                              "page": it.get("page", ""), "attempts": it.get("attempts", 0),
+                             "title_hint": str(it.get("title_hint") or "")[:300],
                              "last_error": "مؤجل",
                              "failed_at": it.get("failed_at") or time.time()})
             queued.add(it["id"])
@@ -8308,6 +8370,7 @@ def build_cli_settings(cfg=None):
         "max_duration": gi("STUDIO", "MAX_DURATION", 0),
         "category": g("STUDIO", "CATEGORY", "25"),
         "ai_enabled": gb("AI", "ENABLED", False),
+        "ai_rewrite_always": gb("AI", "REWRITE_ALWAYS", False),
         "ai_model": g("AI", "MODEL", GEMINI_MODELS[0]),
         "ai_style": g("AI", "STYLE", "احترافي متوازن"),
         "dry_run": gb("SETTINGS", "DRY_RUN", False),
