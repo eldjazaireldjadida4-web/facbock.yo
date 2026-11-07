@@ -793,7 +793,6 @@ def test_ai_title_never_replaces_any_facebook_title(review_cycle, monkeypatch):
     """Gemini لا يعيد كتابة العنوان إطلاقاً: العنوان يبقى عنوان Facebook كما هو."""
     review_cycle["settings"].update({
         "ai_enabled": True,
-        "ai_rewrite_always": True,
         "omit_source_page_name": True,
         "title_optimize": False,
         "thumbnail_enabled": False,
@@ -831,7 +830,6 @@ def test_ai_title_never_replaces_any_facebook_title(review_cycle, monkeypatch):
 def test_ai_title_does_not_replace_real_facebook_title(review_cycle, monkeypatch):
     review_cycle["settings"].update({
         "ai_enabled": True,
-        "ai_rewrite_always": False,
         "omit_source_page_name": True,
         "title_optimize": False,
         "thumbnail_enabled": False,

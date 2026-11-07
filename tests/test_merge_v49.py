@@ -536,6 +536,7 @@ def test_finalize_video_timeout_removes_partial_temp_file(monkeypatch, tmp_path:
 
 # ─────────────────────────── التكامل: تنزيل يحجب اسم الصفحة ───────────────────────────
 def test_download_hides_page_name_in_title_but_keeps_source_attribution(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
     video = tmp_path / "123.mp4"
     video.write_bytes(b"video")
 

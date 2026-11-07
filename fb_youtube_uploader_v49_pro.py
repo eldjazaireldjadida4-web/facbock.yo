@@ -1680,12 +1680,15 @@ def scrape_links_fast(page_url, limit, log_cb=None, cookies_file=None):
                 f"https://www.facebook.com/reel/{entry['id']}"
             )
         if canonical_url:
-            links.append(canonical_url)
+            hint = str(entry.get("title") or entry.get("description") or "").strip()
+            links.append({"url": canonical_url, "title_hint": hint[:300]})
     if not links:
         if log_cb:
             log_cb("لم يُرجع السحب السريع روابط؛ سأتحقق عبر المتصفح قبل اعتبار الصفحة فارغة.")
         return None
-    return order_reels(links, newest_first=False)[:limit]
+    ordered = order_reels([item["url"] for item in links], newest_first=False)[:limit]
+    by_url = {item["url"]: item for item in links}
+    return [by_url[url] for url in ordered if url in by_url]
 
 def get_youtube(account_name, secrets_file=None, allow_interactive=True):
     sf = _app_path(secrets_file or CLIENT_SECRETS_FILE)
@@ -6386,7 +6389,6 @@ class App:
             "cookies_file": self.cookies_path_var.get().strip(),
             "dedupe_content": self.dedupe_var.get(),
             "ai_enabled": self.ai_enabled_var.get(),
-            "ai_rewrite_always": bool(getattr(self, "ai_rewrite_always_var", None) and self.ai_rewrite_always_var.get()),
             "ai_model": self.ai_model_var.get(),
             "ai_style": self.ai_style_var.get(),
             # ── الاستوديو ──
@@ -8531,7 +8533,6 @@ def build_cli_settings(cfg=None):
         "max_duration": gi("STUDIO", "MAX_DURATION", 0),
         "category": g("STUDIO", "CATEGORY", "25"),
         "ai_enabled": gb("AI", "ENABLED", False),
-        "ai_rewrite_always": gb("AI", "REWRITE_ALWAYS", False),
         "ai_model": g("AI", "MODEL", GEMINI_MODELS[0]),
         "ai_style": g("AI", "STYLE", "احترافي متوازن"),
         "dry_run": gb("SETTINGS", "DRY_RUN", False),

@@ -272,3 +272,38 @@ def test_failed_preflight_reports_both_address_families(monkeypatch):
 
     assert app._facebook_network_preflight(logs.append) is False
     assert any("IPv4 وIPv6" in message for message in logs)
+
+
+def test_fast_scrape_keeps_entry_title_as_title_hint(monkeypatch):
+    _reload_app(monkeypatch, {"PROXY": "", "FORCE_IPV4": "false"})
+
+    class FakeYoutubeDL:
+        def __init__(self, _options):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, *_args, **_kwargs):
+            return {
+                "entries": [
+                    {"id": "111", "title": "تقرير عن حصاد القمح"},
+                    {"id": "222", "title": ""},
+                    {"id": "333"},
+                    {"id": "444", "title": "Video"},
+                ]
+            }
+
+    monkeypatch.setattr(app.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+
+    links = app.scrape_links_fast("https://www.facebook.com/watch/?v=123456", 10)
+
+    assert links == [
+        {"url": "https://www.facebook.com/watch/?v=111", "title_hint": "تقرير عن حصاد القمح"},
+        {"url": "https://www.facebook.com/watch/?v=222", "title_hint": ""},
+        {"url": "https://www.facebook.com/watch/?v=333", "title_hint": ""},
+        {"url": "https://www.facebook.com/watch/?v=444", "title_hint": "Video"},
+    ]
