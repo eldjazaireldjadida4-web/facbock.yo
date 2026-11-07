@@ -298,6 +298,19 @@ def normalize_generated_title(title):
         return ""
     return cleaned
 
+def pick_caption_line(text, min_length=15, max_length=150):
+    """يختار أطول سطر ذي معنى من نص بطاقة فيسبوك — التسمية التوضيحية عادةً أطول سطر
+    من اسم الصفحة أو عدّاد التفاعلات، فيصلح عنواناً حقيقياً للمقطع."""
+    best = ""
+    for raw_line in str(text or "").splitlines():
+        line = sanitize_public_text(raw_line, keep_newlines=False).strip()
+        if len(line) < min_length or is_generic_title(line):
+            continue
+        if len(line) > len(best):
+            best = line
+    return best[:max_length]
+
+
 GENERIC_TITLE_VALUES = frozenset({
     "video", "videos", "facebook video", "facebook live", "live video",
     "facebook reel", "facebook reels", "reel", "reels", "reels video",

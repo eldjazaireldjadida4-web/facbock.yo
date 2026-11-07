@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.48.3 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.48.4 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -139,7 +139,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.48.3"
+__version__ = "4.48.4"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -216,6 +216,7 @@ from texttools import (AR_STOPWORDS, BIDI_OVERRIDE_CHARS, EDGE_SEPARATORS,
                        _drop_truncated_brand, _is_unicode_word_char,
                        _name_variants, _remove_hashtags, _truncate_smart,
                        _truncate_suffix_component, _unicode_word_tokens,
+                       pick_caption_line,
                        _youtube_tag_cost, build_description, build_title,
                        clean_title, ensure_source_attribution,
                        extract_hashtags, is_generic_title, normalize_generated_title,
@@ -1367,6 +1368,18 @@ def init_driver(headless=True, log_cb=None):
             log_cb(f"فشل تشغيل المتصفح: {e}")
         return None
 
+def _extract_article_hint(driver, el):
+    """يصعد من رابط المقطع إلى حاوية المنشور (role=article) ويختار أطول سطر
+    معنوى فيها — التسمية التوضيحية الحقيقية. يعيد "" إن لم يجد شيئاً."""
+    try:
+        article = el.find_element(By.XPATH, "ancestor::div[@role='article'][1]")
+        if article is None:
+            return ""
+        return pick_caption_line(article.text or "")
+    except Exception:
+        return ""
+
+
 def get_reels(driver, fb_page, scroll_times, video_limit, log_cb=None):
     """السحب عبر المتصفح، مع إنهاء التنقل المتعذر بدلاً من تعليق الدورة."""
     fb_page = safe_facebook_page_url(fb_page)
@@ -1445,6 +1458,8 @@ def get_reels(driver, fb_page, scroll_times, video_limit, log_cb=None):
                         if candidate and not is_generic_title(candidate):
                             hint = candidate.strip()
                             break
+                    if not hint:
+                        hint = _extract_article_hint(driver, el)
                     links.append({"url": canonical_url, "title_hint": hint})
             except Exception:
                 continue
@@ -1856,7 +1871,7 @@ def _refetch_facebook_title(download_url, source_names, remove_tags, omit_source
 
 def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_tags=False,
                    cookies_file=None, stop_event=None, omit_source_page_name=True, output_dir=None,
-                   title_hint=""):
+                   title_hint="", page_title_fetcher=None):
     """ينزّل المقطع إلى مجلد محاولة خاص، ثم ينقله إلى اسم فريد بعد اكتمال التنزيل."""
     original_url = (url or "").strip()
     download_url = canonicalize_facebook_video_url(original_url)
@@ -1984,13 +1999,34 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
                     title, title_generic = hint_title, False
                     if log_cb:
                         log_cb(f"استُخدم العنوان الملتقط من صفحة Facebook: {title[:40]}")
+            description = sanitize_public_text(info.get("description") or "", keep_newlines=True)
+            if title_generic and description:
+                caption_title = prepare_public_title(
+                    pick_caption_line(description), source_names,
+                    remove_hashtags=remove_tags,
+                    omit_source_page_name=omit_source_page_name,
+                )
+                if not is_generic_title(caption_title):
+                    title, title_generic = caption_title, False
+                    if log_cb:
+                        log_cb(f"استُخدِم عنوان من التسمية التوضيحية للمنشور: {title[:40]}")
             if title_generic:
                 title, title_generic = _refetch_facebook_title(
                     download_url, source_names, remove_tags, omit_source_page_name,
                     ydl_opts, log_cb)
                 if title_generic and hint_title and not is_generic_title(hint_title):
                     title, title_generic = hint_title, False
-            description = sanitize_public_text(info.get("description") or "", keep_newlines=True)
+            if title_generic and page_title_fetcher:
+                rescue_raw = str(page_title_fetcher(download_url) or "")
+                rescue_title = prepare_public_title(
+                    rescue_raw, source_names,
+                    remove_hashtags=remove_tags,
+                    omit_source_page_name=omit_source_page_name,
+                )
+                if not is_generic_title(rescue_title):
+                    title, title_generic = rescue_title, False
+                    if log_cb:
+                        log_cb(f"استُخدِم عنوان صفحة Facebook عبر الجلسة المسجلة: {title[:40]}")
             source_label = next((str(name).strip() for name in source_names
                                  if str(name or "").strip()), "")
             description = ensure_source_attribution(description, source_label, download_url, log_cb)
@@ -6736,18 +6772,16 @@ class App:
             else:
                 page_status = "تم الفحص"
             self._emit_page_status(page, len(links or []), len(new_items), page_status)
-        if driver is not None:
-            try:
-                driver.quit()
-            except Exception:
-                pass
         if ctx.get("facebook_auth_required"):
+            self._safe_quit_driver(driver)
+            driver = None
             pending = [dict(item, retry=True) for item in failed_q] + fresh
             failed_q = held_duplicate_q
             self._requeue_unprocessed(failed_q, pending)
             save_failed_queue(failed_q)
             ctx["facebook_network_unavailable"] = False
             self._log("أُوقفت الدورة قبل أي تنزيل أو رفع بسبب جلسة Facebook؛ حُفظت العناصر المكتشفة لإكمالها بعد تحديث الجلسة.")
+            self._safe_quit_driver(driver)
             return up_count, fail_count + max(1, scrape_failures)
         if scrape_failures:
             fail_count += max(0, scrape_failures - scrape_network_failures)
@@ -6770,6 +6804,7 @@ class App:
             else:
                 self._log("لا توجد فيديوهات جديدة — في انتظار الدورة القادمة.")
             save_failed_queue(failed_q)
+            self._safe_quit_driver(driver)
             return up_count, fail_count
         self._log(f"هذه الدورة: {total} فيديو للمعالجة ({len(fresh)} جديد + {total - len(fresh)} إعادة محاولة)")
         gate_mode = str(settings.get("rights_gate_mode", "strict")).strip() or "strict"
@@ -6800,6 +6835,7 @@ class App:
             self._log("أُوقفت الدفعة الآلية: لم أستطع التحقق من سجل القناة؛ أُعيدت العناصر إلى قائمة الانتظار منعاً لرفع مكرر غير مفحوص.")
             self._requeue_unprocessed(failed_q, process_list)
             save_failed_queue(failed_q)
+            self._safe_quit_driver(driver)
             return up_count, fail_count + 1
 
         for index, item in enumerate(process_list, start=1):
@@ -6823,6 +6859,10 @@ class App:
                     self._stop, settings.get("omit_source_page_name", True),
                     output_dir=settings.get("video_directory", VIDEO_DIRECTORY),
                     title_hint=item.get("title_hint", ""),
+                    page_title_fetcher=(
+                        (lambda u: self._rescue_title_via_driver(driver, u))
+                        if driver is not None else None
+                    ),
                 )
             except StopRequested:
                 self._log("أُوقف التنزيل الجاري بناءً على طلب المستخدم.")
@@ -7617,9 +7657,53 @@ class App:
              "dry_run": dry_count > 0},
             self._log,
         )
+        self._safe_quit_driver(driver)
         return up_count, fail_count
 
-    # ─── أدوات العامل المساعدة ───
+    @staticmethod
+    def _safe_quit_driver(driver):
+        if driver is None:
+            return
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+    def _rescue_title_via_driver(self, driver, url):
+        """طبقة الإنقاذ الأخيرة: يستخدم الجلسة المسجلة نفسها لفتح صفحة الفيديو
+        وقراءة العنوان من DOM بدل الاعتماد على طلبات HTTP مجهولة تحجبها فيسبوك.
+        يعيد نصاً خاماً (قد يكون فارغاً) ولا يرفع أي استثناء."""
+        if driver is None:
+            return ""
+        try:
+            driver.get(url)
+            time.sleep(4)
+            og = driver.execute_script(
+                "var m=document.querySelector('meta[property=\"og:title\"]');"
+                "return m ? (m.content || '') : '';"
+            ) or ""
+            doc_title = str(driver.title or "")
+            main_text = driver.execute_script(
+                "var m=document.querySelector('div[role=\"main\"]');"
+                "return m ? (m.innerText || '') : '';"
+            ) or ""
+            try:
+                driver.get("about:blank")
+            except Exception:
+                pass
+            candidates = [og, doc_title.split("|")[0], pick_caption_line(main_text)]
+            for candidate in candidates:
+                cleaned = sanitize_public_text(str(candidate or ""), keep_newlines=False).strip()
+                if cleaned and not is_generic_title(cleaned):
+                    return cleaned
+            return ""
+        except Exception as error:
+            logging.info("تعذر إنقاذ العنوان عبر الجلسة المسجلة: %s", redact_sensitive_text(str(error)))
+            try:
+                driver.get("about:blank")
+            except Exception:
+                pass
+            return ""
 
     def _make_shorts_from(self, ctx, settings, item, video_data, uploaded_ids, publish_at=None):
         if self._stop.is_set():
