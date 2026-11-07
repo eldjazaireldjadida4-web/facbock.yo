@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.48.6 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.48.7 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -139,7 +139,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.48.6"
+__version__ = "4.48.7"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1775,6 +1775,40 @@ class StopRequested(Exception):
 
 def _safe_download_slug(source_id):
     return re.sub(r"[^A-Za-z0-9_-]+", "_", str(source_id or "video"))[:80] or "video"
+
+
+def cleanup_stale_attempt_dirs(output_dir, max_age_hours=24):
+    """يحذف مجلدات محاولات التنزيل المتبقية من تشغيل انهار قبل تنظيفها.
+
+    تُتجاهل المجلدات الأحدث من max_age_hours تفاديًا لمجلدات محاولة نشطة
+    من نسخة أخرى تعمل بالتوازي. يعيد عدد المجلدات المحذوفة.
+    """
+    if not output_dir or not os.path.isdir(output_dir):
+        return 0
+    root = os.path.realpath(output_dir)
+    threshold = time.time() - max(max_age_hours, 1) * 3600
+    removed = 0
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.startswith(".fb2yt-"):
+            continue
+        candidate = os.path.join(root, entry)
+        if os.path.islink(candidate) or not os.path.isdir(candidate):
+            continue
+        try:
+            if os.path.getmtime(candidate) > threshold:
+                continue
+            shutil.rmtree(candidate)
+            removed += 1
+        except OSError as error:
+            logging.warning(
+                "تعذر حذف مجلد محاولة تنزيل قديم: %s",
+                redact_sensitive_text(str(error)),
+            )
+    return removed
 
 
 def _cleanup_download_attempt(attempt_dir, output_dir):
@@ -3814,6 +3848,9 @@ class App:
         self.stats    = load_stats()
         self.pages    = load_pages()
         self.page_status = load_page_status()
+        stale_removed = cleanup_stale_attempt_dirs(VIDEO_DIRECTORY)
+        if stale_removed:
+            self._logq.put(("log", f"حُذف {stale_removed} مجلد تنزيل مؤقت متبقيًا من تشغيل سابق انهار."))
 
         # تخطيط grid (صف 0 رأس، صف 1 نوتبوك يتمدد، صف 2-3 قضيب الأزرار):
         # grid يضمن ظهور قضيب الأزرار مهما كان ترتيب البناء،
