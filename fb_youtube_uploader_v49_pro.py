@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.48.4 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.48.5 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -139,7 +139,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.48.4"
+__version__ = "4.48.5"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -405,12 +405,46 @@ def save_accounts(accounts):
         raise ValueError("قائمة الحسابات غير صالحة.")
     _write_json(ACCOUNTS_FILE, accounts)
 
+ID_FILE_MAX_ENTRIES = 100_000   # سقف ملفات المعرفات قبل تقليم الأقدم (v4.48.5)
+_ID_SET_CACHE = {}
+
+
+def _trim_id_file(path, max_entries=ID_FILE_MAX_ENTRIES):
+    """يقلم ملف المعرفات احتفاظاً بأحدث السجلات عند تجاوز السقف."""
+    try:
+        # كل سطر سجل يحتاج بايتين على الأقل (حرف + سطر جديد)؛ ما دون هذا الحجم
+        # لا يمكن أن يتجاوز السقف أصلًا، فنكتفي بالعودة دون قراءة الملف.
+        if not os.path.exists(path) or os.path.getsize(path) < max_entries * 2:
+            return
+        with open(path, "r", encoding="utf-8") as source:
+            lines = [line for line in source if line.strip()]
+        if len(lines) <= max_entries:
+            return
+        kept = lines[-max_entries:]
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as target:
+                target.writelines(kept)
+                target.flush()
+                os.fsync(target.fileno())
+            restrict_file_permissions(tmp)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    except OSError:
+        logging.exception("تعذر تقليم ملف المعرفات %s", os.path.basename(path))
+
+
 def _load_id_set(path):
     if not os.path.exists(path):
         return set()
     if os.path.islink(path):
         raise RuntimeError(f"{os.path.basename(path)} is a symbolic link; no upload was started.")
     restrict_file_permissions(path)
+    cached = _ID_SET_CACHE.get(path)
+    if cached is not None:
+        return set(cached)
     try:
         with open(path, "r", encoding="utf-8") as source:
             values = {line.strip() for line in source if line.strip()}
@@ -418,7 +452,8 @@ def _load_id_set(path):
         raise RuntimeError(f"Could not read {os.path.basename(path)}; no upload was started.") from error
     if any("\n" in value or "\r" in value for value in values):
         raise RuntimeError(f"{os.path.basename(path)} contains invalid records; no upload was started.")
-    return values
+    _ID_SET_CACHE[path] = frozenset(values)
+    return set(values)
 
 def _append_id(path, vid):
     value = str(vid or "").strip()
@@ -433,6 +468,9 @@ def _append_id(path, vid):
             os.fsync(output.fileno())
     except OSError as error:
         raise RuntimeError(f"Could not securely update {os.path.basename(path)}.") from error
+    cached = _ID_SET_CACHE.get(path)
+    _ID_SET_CACHE[path] = frozenset((cached or set()) | {value})
+    _trim_id_file(path)
     return True
 
 def load_uploaded_ids():
