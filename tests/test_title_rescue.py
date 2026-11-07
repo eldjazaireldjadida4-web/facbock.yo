@@ -51,6 +51,70 @@ def test_pick_caption_line_rejects_generic_and_short_lines():
     assert texttools.pick_caption_line(None) == ""
 
 
+def test_download_video_prefers_facebook_card_title_over_unrelated_downloader_title(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
+    monkeypatch.setattr(app, "_facebook_watch_og_title", lambda *_a, **_k: "")
+    monkeypatch.setattr(app.yt_dlp, "YoutubeDL", _fake_ydl_factory(
+        {"title": "فيديو من الوطنية TV", "description": ""},
+    ))
+    data = app.download_video(
+        "https://www.facebook.com/watch/?v=123",
+        page_name="الوطنية TV",
+        title_hint="هدف رائع في المباراة النهائية بين المنتخبين",
+    )
+    assert data["title"].startswith("هدف رائع في المباراة النهائية")
+    assert data["title_generic"] is False
+
+
+def test_download_video_keeps_good_title_when_card_hint_is_weak(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
+    monkeypatch.setattr(app, "_facebook_watch_og_title", lambda *_a, **_k: "")
+    monkeypatch.setattr(app.yt_dlp, "YoutubeDL", _fake_ydl_factory(
+        {"title": "تغطية مباراة المنتخب في التصفيات القارية", "description": ""},
+    ))
+    data = app.download_video(
+        "https://www.facebook.com/watch/?v=123",
+        page_name="الوطنية TV",
+        title_hint="فيديو من الوطنية TV",
+    )
+    assert data["title"].startswith("تغطية مباراة المنتخب")
+
+
+def test_facebook_card_title_reaches_youtube_upload_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
+    monkeypatch.setattr(app, "_facebook_watch_og_title", lambda *_a, **_k: "")
+    monkeypatch.setattr(app.yt_dlp, "YoutubeDL", _fake_ydl_factory(
+        {"title": "فيديو من الوطنية TV", "description": ""},
+    ))
+    facebook_title = "هدف رائع في المباراة النهائية بين المنتخبين"
+    video_data = app.download_video(
+        "https://www.facebook.com/watch/?v=123",
+        page_name="الوطنية TV",
+        title_hint=facebook_title,
+    )
+    captured = {}
+
+    class FakeRequest:
+        def next_chunk(self):
+            return None, {"id": "abcdefghijk"}
+
+    class FakeYouTube:
+        def videos(self):
+            return self
+
+        def insert(self, **kwargs):
+            captured.update(kwargs)
+            return FakeRequest()
+
+    monkeypatch.setattr(app, "MediaFileUpload", lambda *_a, **_k: object())
+    result = app.upload_video(FakeYouTube(), video_data, tags=["كرة"])
+
+    assert result == "abcdefghijk"
+    assert captured["body"]["snippet"]["title"] == facebook_title
+
+
 def test_download_video_uses_caption_from_description(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
     monkeypatch.setattr(app, "_facebook_watch_og_title", lambda *_a, **_k: "")

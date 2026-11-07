@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.48.7 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.48.8 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -139,7 +139,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.48.7"
+__version__ = "4.48.8"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -2063,17 +2063,21 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
                 omit_source_page_name=omit_source_page_name,
             )
             title_generic = is_generic_title(title)
-            hint_title = ""
-            if title_generic:
-                hint_title = prepare_public_title(
-                    title_hint, source_names,
-                    remove_hashtags=remove_tags,
-                    omit_source_page_name=omit_source_page_name,
-                )
-                if not is_generic_title(hint_title):
+            hint_caption = pick_caption_line(title_hint)
+            hint_title = prepare_public_title(
+                hint_caption or title_hint, source_names,
+                remove_hashtags=remove_tags,
+                omit_source_page_name=omit_source_page_name,
+            )
+            hint_is_confident = (
+                bool(hint_caption) and len(hint_title) >= 15
+                and not is_generic_title(hint_title)
+            )
+            if not is_generic_title(hint_title):
+                if title_generic or (hint_is_confident and hint_title != title):
                     title, title_generic = hint_title, False
                     if log_cb:
-                        log_cb(f"استُخدم العنوان الملتقط من صفحة Facebook: {title[:40]}")
+                        log_cb(f"اعتُمد عنوان المنشور الملتقط من Facebook: {title[:40]}")
             description = sanitize_public_text(info.get("description") or "", keep_newlines=True)
             if title_generic and description:
                 caption_title = prepare_public_title(
@@ -2089,8 +2093,6 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
                 title, title_generic = _refetch_facebook_title(
                     download_url, source_names, remove_tags, omit_source_page_name,
                     ydl_opts, log_cb)
-                if title_generic and hint_title and not is_generic_title(hint_title):
-                    title, title_generic = hint_title, False
             if title_generic and page_title_fetcher:
                 rescue_raw = str(page_title_fetcher(download_url) or "")
                 rescue_title = prepare_public_title(
