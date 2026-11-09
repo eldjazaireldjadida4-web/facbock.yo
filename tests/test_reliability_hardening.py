@@ -139,12 +139,17 @@ def test_settings_validation_rejects_bad_boolean_range_proxy_and_incomplete_righ
     cfg.set("STUDIO", "RIGHTS_GATE_MODE", "operator_confirmed")
     cfg.set("STUDIO", "REVIEW_BEFORE_UPLOAD", "false")
     cfg.set("STUDIO", "RIGHTS_OPERATOR_STATEMENT", "")
+    cfg.add_section("AI")
+    cfg.set("AI", "TRANSCRIBE_LOCAL", "sometimes")
+    cfg.set("AI", "TRANSCRIPTION_MODEL", "large")
 
     errors = validate_configuration(cfg)
 
     assert any("BETWEEN_VIDEOS" in error for error in errors)
     assert any("HEADLESS" in error for error in errors)
     assert any("PROXY" in error for error in errors)
+    assert any("TRANSCRIBE_LOCAL" in error for error in errors)
+    assert any("TRANSCRIPTION_MODEL" in error for error in errors)
     assert any("operator" in error.lower() or "إقرار" in error for error in errors)
 
 

@@ -123,6 +123,10 @@ TELEGRAM_ERRORS = true
 ENABLED = false
 MODEL = gemini-2.5-flash
 STYLE = احترافي متوازن
+# يحتاج ENABLED = true؛ الصوت محلي والنص المفرّغ يُرسل إلى Gemini.
+TRANSCRIBE_LOCAL = false
+# tiny أو base أو small؛ لا تُنزّل أوزان النموذج إلا عند أول استخدام.
+TRANSCRIPTION_MODEL = base
 
 [SAFETY]
 # مراجعة نصية اختيارية عبر أداة OUSSAMA Cutter المحلية. لا تفعّلها قبل مراجعة إعدادات مزوّد AI فيها.

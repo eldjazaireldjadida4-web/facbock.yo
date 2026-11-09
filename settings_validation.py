@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 
 from content_safety import RIGHTS_BASIS_LABELS, validate_automatic_rights_settings
 from control_plane import validate_publication_controls
+from local_transcription import SUPPORTED_MODELS as LOCAL_TRANSCRIPTION_MODELS
 
 
 BOOLEAN_SETTINGS = (
@@ -35,6 +36,7 @@ BOOLEAN_SETTINGS = (
     ("STUDIO", "COOKIES_ENABLED"),
     ("STUDIO", "TELEGRAM_ERRORS"),
     ("AI", "ENABLED"),
+    ("AI", "TRANSCRIBE_LOCAL"),
     ("SAFETY", "ENABLED"),
     ("SAFETY", "ALLOW_PUBLIC_AUTOMATION"),
 )
@@ -131,6 +133,10 @@ def validate_configuration(cfg: configparser.ConfigParser) -> list[str]:
     if rights_basis not in RIGHTS_BASIS_LABELS:
         errors.append("STUDIO.RIGHTS_OPERATOR_BASIS غير صالح.")
     tags = _get(cfg, "STUDIO", "TAGS", "")
+    transcription_model = _get(cfg, "AI", "TRANSCRIPTION_MODEL", "base").lower()
+    if transcription_model not in LOCAL_TRANSCRIPTION_MODELS:
+        errors.append("AI.TRANSCRIPTION_MODEL يجب أن تكون tiny أو base أو small.")
+
     if len(tags) > 500:
         errors.append("STUDIO.TAGS يتجاوز حد YouTube البالغ 500 حرف.")
     proxy = _get(cfg, "WATCH", "PROXY", "")
