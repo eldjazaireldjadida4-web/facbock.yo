@@ -21,7 +21,10 @@ def test_ui_defaults_cover_all_keys():
     assert vals[("SETTINGS", "DAILY_UPLOAD_LIMIT")] == "100"
     assert vals[("WATCH", "INTERVAL_MINUTES")] == "10"
     assert vals[("AI", "MODEL")] == pro.GEMINI_MODELS[0]
+    assert vals[("AI", "TRANSCRIBE_LOCAL")] == "false"
+    assert vals[("AI", "TRANSCRIPTION_MODEL")] == "base"
     assert vals[("STUDIO", "CATEGORY")] == "25"
+    assert vals[("STUDIO", "PRESERVE_FACEBOOK_TITLE")] == "true"
     assert vals[("STUDIO", "REVIEW_BEFORE_UPLOAD")] == "true"
     assert vals[("STUDIO", "RIGHTS_GATE_MODE")] == "strict"
     assert vals[("STUDIO", "RIGHTS_OPERATOR_STATEMENT")] == ""
@@ -42,7 +45,10 @@ def test_ui_roundtrip_preserves_other_sections(tmp_path):
     values[("WATCH", "INTERVAL_MINUTES")] = "30"
     values[("STUDIO", "TITLE_PREFIX")] = "الوطنية"
     values[("STUDIO", "OMIT_SOURCE_PAGE_NAME_FROM_TITLE")] = "false"
+    values[("STUDIO", "PRESERVE_FACEBOOK_TITLE")] = "false"
     values[("AI", "STYLE")] = "إخباري رسمي"
+    values[("AI", "TRANSCRIBE_LOCAL")] = "true"
+    values[("AI", "TRANSCRIPTION_MODEL")] = "small"
     values[("SETTINGS", "DRY_RUN")] = "true"
     values[("SAFETY", "ENABLED")] = "true"
     values[("SAFETY", "ALLOW_PUBLIC_AUTOMATION")] = "true"
@@ -53,7 +59,10 @@ def test_ui_roundtrip_preserves_other_sections(tmp_path):
     assert again[("WATCH", "INTERVAL_MINUTES")] == "30"
     assert again[("STUDIO", "TITLE_PREFIX")] == "الوطنية"
     assert again[("STUDIO", "OMIT_SOURCE_PAGE_NAME_FROM_TITLE")] == "false"
+    assert again[("STUDIO", "PRESERVE_FACEBOOK_TITLE")] == "false"
     assert again[("AI", "STYLE")] == "إخباري رسمي"
+    assert again[("AI", "TRANSCRIBE_LOCAL")] == "true"
+    assert again[("AI", "TRANSCRIPTION_MODEL")] == "small"
     assert again[("SETTINGS", "DRY_RUN")] == "true"
     assert again[("SAFETY", "ENABLED")] == "true"
     assert again[("SAFETY", "ALLOW_PUBLIC_AUTOMATION")] == "true"
@@ -148,6 +157,7 @@ def test_ui_keys_complete_for_worker():
         ("WATCH", "INTERVAL_MINUTES"), ("WATCH", "FAST_SCRAPE"), ("WATCH", "AUTO_START"),
         ("STUDIO", "TITLE_PREFIX"), ("STUDIO", "TITLE_SUFFIX"), ("STUDIO", "CATEGORY"),
         ("STUDIO", "TITLE_OPTIMIZE"), ("STUDIO", "AUTO_SHORTS"),
+        ("STUDIO", "PRESERVE_FACEBOOK_TITLE"),
         ("STUDIO", "OMIT_SOURCE_PAGE_NAME_FROM_TITLE"), ("STUDIO", "AUTO_HASHTAGS"),
         ("STUDIO", "DEDUPE_CONTENT"), ("STUDIO", "CREDIT_LINE"),
         ("STUDIO", "EXTRA_DESCRIPTION"), ("STUDIO", "TAGS"),
@@ -164,6 +174,7 @@ def test_ui_keys_complete_for_worker():
         ("STUDIO", "TELEGRAM_TOKEN"), ("STUDIO", "TELEGRAM_CHAT_ID"),
         ("STUDIO", "TELEGRAM_ERRORS"), ("STUDIO", "PG_SCROLL"), ("STUDIO", "PG_LIMIT"),
         ("AI", "ENABLED"), ("AI", "MODEL"), ("AI", "STYLE"),
+        ("AI", "TRANSCRIBE_LOCAL"), ("AI", "TRANSCRIPTION_MODEL"),
         ("SAFETY", "ENABLED"), ("SAFETY", "CUTTER_ROOT"), ("SAFETY", "CUTTER_PYTHON"),
         ("SAFETY", "ALLOW_PUBLIC_AUTOMATION"),
     }

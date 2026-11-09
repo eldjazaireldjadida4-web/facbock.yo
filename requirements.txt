@@ -9,3 +9,4 @@ python-bidi>=0.6.6
 fonttools>=4.40.0
 portalocker>=4.4.1
 tzdata>=2026.6
+faster-whisper>=1.2.1,<2.0

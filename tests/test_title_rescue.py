@@ -115,6 +115,102 @@ def test_facebook_card_title_reaches_youtube_upload_payload(tmp_path, monkeypatc
     assert captured["body"]["snippet"]["title"] == facebook_title
 
 
+def test_upload_video_keeps_preserved_facebook_title_exact(tmp_path, monkeypatch):
+    facebook_title = "شاهدوا الآن!!! #نهائي | الوطنية TV"
+    captured = {}
+
+    class FakeRequest:
+        def next_chunk(self):
+            return None, {"id": "abcdefghijk"}
+
+    class FakeYouTube:
+        def videos(self):
+            return self
+
+        def insert(self, **kwargs):
+            captured.update(kwargs)
+            return FakeRequest()
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"video")
+    monkeypatch.setattr(app, "MediaFileUpload", lambda *_a, **_k: object())
+    result = app.upload_video(
+        FakeYouTube(),
+        {"file": str(video_path), "title": facebook_title,
+         "preserve_facebook_title": True, "desc": ""},
+        tags=["كرة"],
+    )
+
+    assert result == "abcdefghijk"
+    assert captured["body"]["snippet"]["title"] == facebook_title
+
+
+def test_preserved_facebook_title_over_youtube_limit_is_rejected_not_truncated(tmp_path, monkeypatch):
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"video")
+    long_title = "عنوان طويل " * 12
+    requests = []
+
+    class FakeYouTube:
+        def videos(self):
+            return self
+
+        def insert(self, **kwargs):
+            requests.append(kwargs)
+            raise AssertionError("an overlong title must not reach YouTube")
+
+    monkeypatch.setattr(app, "MediaFileUpload", lambda *_a, **_k: object())
+    result = app.upload_video(
+        FakeYouTube(),
+        {"file": str(video_path), "title": long_title,
+         "preserve_facebook_title": True, "desc": ""},
+        tags=["كرة"],
+    )
+
+    assert result == "INVALID_TITLE"
+    assert requests == []
+
+
+def test_preserved_facebook_title_over_100_chars_is_rejected_not_truncated(tmp_path, monkeypatch):
+    inserted = []
+    title = "عنوان Facebook طويل " * 8
+
+    class FakeYouTube:
+        def videos(self):
+            return self
+
+        def insert(self, **kwargs):
+            inserted.append(kwargs)
+            raise AssertionError("oversized source titles must not reach YouTube")
+
+    result = app.upload_video(
+        FakeYouTube(),
+        {"file": str(tmp_path / "unused.mp4"), "title": title,
+         "preserve_facebook_title": True, "desc": ""},
+        tags=["كرة"],
+    )
+
+    assert result == "INVALID_TITLE"
+    assert inserted == []
+
+
+def test_preserved_source_title_over_100_characters_is_rejected_not_truncated():
+    class FakeYouTube:
+        def videos(self):
+            return self
+
+        def insert(self, **_kwargs):
+            raise AssertionError("a too-long title must never reach YouTube")
+
+    result = app.upload_video(
+        FakeYouTube(),
+        {"file": "not-opened.mp4", "title": "ع" * 101,
+         "preserve_facebook_title": True, "desc": ""},
+    )
+
+    assert result == "INVALID_TITLE"
+
+
 def test_download_video_uses_caption_from_description(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
     monkeypatch.setattr(app, "_facebook_watch_og_title", lambda *_a, **_k: "")
