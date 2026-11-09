@@ -110,6 +110,7 @@ def review_cycle(monkeypatch, tmp_path):
         "cookies_enabled": False, "cookies_file": "", "remove_tags": False,
         "min_disk_gb": 0, "min_duration": 0, "max_duration": 0,
         "dedupe_content": False, "ai_enabled": False, "title_optimize": False,
+        "preserve_facebook_title": True,
         "title_prefix": "", "title_suffix": "", "auto_shorts": False,
         "auto_hashtags": False, "extra_description": "", "credit_line": "",
         "tags": ["Facebook"], "logo_enabled": False, "schedule_enabled": False,
@@ -330,7 +331,7 @@ def test_approval_applies_edits_and_uploads_matching_thumbnail(review_cycle, mon
     )
 
     assert result == (1, 0)
-    assert captured["title"] == "Approved title"
+    assert captured["title"] == "Approved title | Page"
     assert captured["description"].startswith("Approved description")
     assert "المصدر الأصلي: Page" in captured["description"]
     assert "https://www.facebook.com/reel/reel-1" in captured["description"]
@@ -783,10 +784,10 @@ def test_manual_edits_force_a_fresh_policy_review(review_cycle, monkeypatch):
     assert "Original description" in review_calls[0][1]
     assert "المصدر الأصلي: Page" in review_calls[0][1]
     assert "https://www.facebook.com/reel/reel-1" in review_calls[0][1]
-    assert review_calls[1][0] == "Approved title"
+    assert review_calls[1][0] == "Approved title | Page"
     assert "Approved description" in review_calls[1][1]
     assert "المصدر الأصلي: Page" in review_calls[1][1]
-    assert captured == {"title": "Approved title", "privacy": "unlisted"}
+    assert captured == {"title": "Approved title | Page", "privacy": "unlisted"}
 
 
 def test_ai_title_never_replaces_any_facebook_title(review_cycle, monkeypatch):
@@ -825,41 +826,6 @@ def test_ai_title_never_replaces_any_facebook_title(review_cycle, monkeypatch):
     assert captured["description"].startswith("وصف مولد")
     assert "المصدر الأصلي: Page" in captured["description"]
     assert "https://www.facebook.com/reel/reel-1" in captured["description"]
-
-
-def test_ai_title_does_not_replace_real_facebook_title(review_cycle, monkeypatch):
-    review_cycle["settings"].update({
-        "ai_enabled": True,
-        "omit_source_page_name": True,
-        "title_optimize": False,
-        "thumbnail_enabled": False,
-    })
-    captured = {}
-    monkeypatch.setattr(
-        review_cycle["worker"],
-        "_ai_metadata",
-        lambda *_args: {
-            "title": "عنوان جذاب",
-            "description": "وصف مولد",
-            "tags": [],
-        },
-    )
-    monkeypatch.setattr(
-        app,
-        "wait_for_review_decision",
-        lambda _uiq, _stop, payload: captured.update(payload) or {"action": "skip"},
-    )
-    monkeypatch.setattr(
-        app, "upload_video", lambda *_args, **_kwargs: pytest.fail("a skipped review must not upload")
-    )
-
-    result = review_cycle["worker"]._run_cycle(
-        review_cycle["context"], review_cycle["pages"], review_cycle["settings"], False
-    )
-
-    assert result == (0, 0)
-    assert captured["title"] == "Original title"
-    assert captured["description"].startswith("وصف مولد")
 
 
 def test_empty_cached_ai_title_preserves_source_title(review_cycle, monkeypatch):
@@ -1077,6 +1043,211 @@ def test_upload_not_started_clears_intent_and_remains_retryable(review_cycle, mo
     final_queue = review_cycle["queued"][-1]
     assert final_queue["id"] == "reel-1"
     assert final_queue["last_error"] == "لم يبدأ طلب الرفع"
+
+
+def test_preserved_facebook_title_bypasses_all_automatic_rewrites(review_cycle, monkeypatch):
+    facebook_title = "شاهدوا الآن!!! #نهائي | Page"
+    review_cycle["settings"].update({
+        "preserve_facebook_title": True,
+        "title_optimize": True,
+        "remove_tags": True,
+        "omit_source_page_name": True,
+        "auto_shorts": True,
+        "title_prefix": "Prefix",
+        "title_suffix": "Suffix",
+        "thumbnail_enabled": False,
+    })
+    download_calls = {}
+    review_payloads = []
+    upload_payloads = []
+    rights_record = app.new_rights_record(
+        rights_basis="owned",
+        original_contribution="تحليل تحريري أصلي يضيف سياقاً ومعلومات جديدة للمشاهد.",
+        duplicate_review_note="هذا المحتوى يختلف فعلياً في الوقائع والسياق عن الفيديو السابق.",
+        source_url="https://www.facebook.com/reel/reel-1",
+        attested=True,
+    )
+
+    def fake_download(*args, **kwargs):
+        download_calls.update(args=args, kwargs=kwargs)
+        return {
+            "file": "source.mp4", "title": facebook_title,
+            "desc": "Original description", "duration": 30,
+            "source_names": ["Page"], "source_page": "Page",
+            "source_url": "https://www.facebook.com/reel/reel-1",
+        }
+
+    monkeypatch.setattr(app, "download_video", fake_download)
+    monkeypatch.setattr(
+        app,
+        "wait_for_review_decision",
+        lambda _uiq, _stop, payload: review_payloads.append(payload) or {
+            "action": "approve", "title": payload["title"],
+            "description": payload["description"], "privacy": "private",
+            "rights_record": rights_record,
+        },
+    )
+    monkeypatch.setattr(
+        app,
+        "upload_video",
+        lambda _yt, video, *_args, **_kwargs: upload_payloads.append(dict(video))
+        or "abcdefghijk",
+    )
+
+    result = review_cycle["worker"]._run_cycle(
+        review_cycle["context"], review_cycle["pages"], review_cycle["settings"], False
+    )
+
+    assert result == (1, 0)
+    assert download_calls["args"][4] is False
+    assert download_calls["args"][7] is False
+    assert download_calls["kwargs"]["preserve_facebook_title"] is True
+    assert review_payloads[0]["title"] == facebook_title
+    assert upload_payloads[0]["title"] == facebook_title
+    assert upload_payloads[0]["preserve_facebook_title"] is True
+
+
+def test_title_optimizer_remains_available_when_source_preservation_is_disabled(review_cycle, monkeypatch):
+    review_cycle["settings"].update({
+        "preserve_facebook_title": False,
+        "title_optimize": True,
+        "remove_tags": True,
+        "omit_source_page_name": True,
+        "auto_shorts": True,
+        "title_prefix": "Prefix",
+        "title_suffix": "Suffix",
+        "thumbnail_enabled": False,
+    })
+    review_payloads = []
+    monkeypatch.setattr(app, "download_video", lambda *_args, **_kwargs: {
+        "file": "source.mp4", "title": "Original source title #نهائي",
+        "desc": "Description", "duration": 30,
+    })
+    monkeypatch.setattr(
+        app,
+        "wait_for_review_decision",
+        lambda _uiq, _stop, payload: review_payloads.append(payload) or {"action": "skip"},
+    )
+
+    result = review_cycle["worker"]._run_cycle(
+        review_cycle["context"], review_cycle["pages"], review_cycle["settings"], False
+    )
+
+    assert result == (0, 0)
+    assert review_payloads[0]["title"] == "Prefix Original source title Suffix"
+
+
+def test_missing_facebook_title_can_be_entered_in_manual_review(review_cycle, monkeypatch):
+    review_cycle["settings"].update({
+        "preserve_facebook_title": True,
+        "review_before_upload": True,
+        "thumbnail_enabled": False,
+    })
+    monkeypatch.setattr(app, "download_video", lambda *_args, **_kwargs: {
+        "file": "source.mp4", "title": "مقطع Page — 2026-11-09 12:00",
+        "title_generic": True, "desc": "Description", "duration": 30,
+    })
+    review_payloads = []
+    upload_payloads = []
+    rights_record = app.new_rights_record(
+        rights_basis="owned",
+        original_contribution="تحليل تحريري أصلي يضيف سياقاً ومعلومات جديدة للمشاهد.",
+        duplicate_review_note="هذا المحتوى يختلف فعلياً في الوقائع والسياق عن الفيديو السابق.",
+        source_url="https://www.facebook.com/reel/reel-1",
+        attested=True,
+    )
+    manual_title = "عنوان كتبه المشغل بنفسه!!! #مهم"
+    monkeypatch.setattr(
+        app,
+        "wait_for_review_decision",
+        lambda _uiq, _stop, payload: review_payloads.append(payload) or {
+            "action": "approve", "title": manual_title,
+            "description": payload["description"], "privacy": "private",
+            "rights_record": rights_record,
+        },
+    )
+    monkeypatch.setattr(
+        app,
+        "upload_video",
+        lambda _yt, video, *_args, **_kwargs: upload_payloads.append(dict(video)
+        ) or "abcdefghijk",
+    )
+
+    result = review_cycle["worker"]._run_cycle(
+        review_cycle["context"], review_cycle["pages"], review_cycle["settings"], False
+    )
+
+    assert result == (1, 0)
+    assert review_payloads[0]["title"] == ""
+    assert review_payloads[0]["title_missing"] is True
+    assert upload_payloads[0]["title"] == manual_title
+    assert upload_payloads[0]["title_missing"] is False
+
+
+@pytest.mark.parametrize("placeholder", ("Facebook Live", "مقطع الصفحة — 2026-11-09 12:00"))
+def test_missing_facebook_title_blocks_automatic_upload(review_cycle, monkeypatch, placeholder):
+    review_cycle["settings"].update({
+        "preserve_facebook_title": True,
+        "review_before_upload": False,
+        "thumbnail_enabled": False,
+    })
+    monkeypatch.setattr(app, "download_video", lambda *_args, **_kwargs: {
+        "file": "source.mp4", "title": placeholder, "title_generic": True,
+        "desc": "Original description", "duration": 30,
+    })
+    monkeypatch.setattr(
+        app, "upload_video", lambda *_args, **_kwargs: pytest.fail("missing source title must not auto-upload")
+    )
+
+    result = review_cycle["worker"]._run_cycle(
+        review_cycle["context"], review_cycle["pages"], review_cycle["settings"], False
+    )
+
+    assert result == (0, 1)
+    assert review_cycle["uploaded_ids"] == []
+    assert review_cycle["queued"][-1]["last_error"] == "facebook_title_missing"
+
+
+def test_preserved_title_is_not_rewritten_for_shorts(review_cycle, monkeypatch, tmp_path):
+    source = tmp_path / "source.mp4"
+    clip = tmp_path / "clip.mp4"
+    source.write_bytes(b"source")
+    clip.write_bytes(b"clip")
+    facebook_title = "شاهدوا الآن!!! #نهائي | Page"
+    review_payloads = []
+    review_cycle["settings"].update({
+        "preserve_facebook_title": True,
+        "review_before_upload": True,
+        "thumbnail_enabled": False,
+        "content_review_enabled": False,
+        "privacy": "private",
+    })
+    monkeypatch.setattr(app, "get_rights_record", lambda *_args: {"attested": True})
+    monkeypatch.setattr(app, "rights_record_errors", lambda *_args: [])
+    monkeypatch.setattr(app, "validate_publication_controls", lambda *_args: [])
+    monkeypatch.setattr(app, "_audio_rms_per_second", lambda *_args: [1.0] * 120)
+    monkeypatch.setattr(app, "find_hot_segment", lambda *_args, **_kwargs: (5, 30))
+    monkeypatch.setattr(app, "cut_shorts_clip", lambda *_args, **_kwargs: str(clip))
+    monkeypatch.setattr(app, "validate_media", lambda *_args, **_kwargs: (True, {"duration": 30}))
+    monkeypatch.setattr(app, "append_history", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(app, "remove_thumbnail_preview", lambda *_args: None)
+    monkeypatch.setattr(
+        app,
+        "wait_for_review_decision",
+        lambda _uiq, _stop, payload: review_payloads.append(payload) or {"action": "skip"},
+    )
+
+    review_cycle["worker"]._make_shorts_from(
+        review_cycle["context"],
+        review_cycle["settings"],
+        {"id": "reel-1", "url": "https://www.facebook.com/reel/reel-1", "page": "Page"},
+        {"file": str(source), "title": facebook_title,
+         "duration": max(app.SHORTS_MIN_SOURCE + 10, 90),
+         "preserve_facebook_title": True},
+        set(),
+    )
+
+    assert review_payloads[0]["title"] == facebook_title
 
 
 def test_local_transcript_enriches_ai_without_rewriting_source_title(review_cycle, monkeypatch):

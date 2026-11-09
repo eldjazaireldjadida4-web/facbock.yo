@@ -376,8 +376,9 @@ def test_account_rotation_on_quota(sandboxed_files, monkeypatch):
 
 
 def test_build_cli_settings_defaults():
-    s = pro.build_cli_settings()
+    s = pro49.build_cli_settings()
     assert s["interval_minutes"] == 10 and s["title_optimize"] is True
+    assert s["preserve_facebook_title"] is True
     assert s["category"] == "25" and s["dedupe_content"] is True
     assert s["logo_enabled"] is False
 

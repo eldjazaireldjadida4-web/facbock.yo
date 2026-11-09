@@ -283,6 +283,15 @@ def _compose_title_parts(prefix, title, suffix, limit=YOUTUBE_TITLE_MAX):
     return final
 
 
+def preserve_source_title(title):
+    """يبقي الكلمات والوسوم والترقيم؛ يزيل محارف التحكم ويوحّد المسافات فقط."""
+    if title is None:
+        return ""
+    text = unicodedata.normalize("NFC", str(title)).translate(BIDI_OVERRIDE_CHARS)
+    text = INVALID_TITLE_CHARS.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def normalize_youtube_title(title):
     """ينظف عنوان الرفع ويضمن ألا يكون فارغاً أو أطول من حد YouTube."""
     if title is None:

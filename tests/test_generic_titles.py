@@ -45,6 +45,23 @@ def _fake_ydl_factory(download_title: str, metadata_title: str):
     return FakeYDL
 
 
+def test_preserve_source_title_keeps_hashtags_page_name_and_punctuation():
+    source = "شاهد الفيديو الآن!!! #نهائي | الوطنية TV"
+    assert texttools.preserve_source_title(source) == source
+
+
+def test_download_video_preserve_mode_keeps_facebook_title_verbatim(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
+    source = "شاهد الفيديو الآن!!! #نهائي | الوطنية TV"
+    monkeypatch.setattr(app.yt_dlp, "YoutubeDL", _fake_ydl_factory(source, source))
+    data = app.download_video(
+        "https://www.facebook.com/watch/?v=123",
+        page_name="الوطنية TV",
+        preserve_facebook_title=True,
+    )
+    assert data["title"] == source
+
+
 def test_download_video_uses_real_title_when_extraction_returns_one(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "VIDEO_DIRECTORY", str(tmp_path / "out"))
     monkeypatch.setattr(app.yt_dlp, "YoutubeDL",

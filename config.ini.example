@@ -51,6 +51,8 @@ TITLE_PREFIX =
 TITLE_SUFFIX =
 CATEGORY = 25
 TITLE_OPTIMIZE = true
+# يحفظ عنوان Facebook دون إزالة الحشو أو اسم الصفحة أو الهاشتاجات أو إضافة #Shorts.
+PRESERVE_FACEBOOK_TITLE = true
 OMIT_SOURCE_PAGE_NAME_FROM_TITLE = true
 AUTO_SHORTS = true
 AUTO_HASHTAGS = true
