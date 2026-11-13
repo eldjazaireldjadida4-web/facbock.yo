@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.5"
+__version__ = "4.49.6"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -5736,11 +5736,44 @@ class App:
         if path:
             self.cutter_python_var.set(path)
 
+    def _queue_edit_lock(self, title):
+        """يمنع تعديل قائمة الانتظار من نسخة ثانية أو تشغيل CLI متزامن.
+
+        القفل داخل العملية فقط كان يحمي من خيطها؛ عمليتان تكتبان من لقطتين
+        مختلفتين تُفقد إحداهما الأخرى، وقد يختفي مدخل «رفع قيد التنفيذ».
+        """
+        try:
+            return AutomationRunLock(os.path.join(APP_DIRECTORY, ".automation.lock")).acquire()
+        except AutomationAlreadyRunning:
+            messagebox.showwarning(
+                title,
+                "يوجد تشغيل آخر (واجهة ثانية أو CLI) يستخدم هذا المجلد. "
+                "أوقفه ثم أعد المحاولة؛ لن أعدّل قائمة الانتظار من نسخة مختلفة.",
+                parent=self.root,
+            )
+            return None
+        except OSError as error:
+            messagebox.showerror(
+                title,
+                f"تعذر تأمين قائمة الانتظار: {error}",
+                parent=self.root,
+            )
+            return None
+
     def _reconcile_unknown_upload(self):
         worker = getattr(self, "_thread", None)
         if self._watching or (worker is not None and worker.is_alive()):
             messagebox.showwarning("العامل يعمل", "أوقف العامل قبل مطابقة نتيجة الرفع.", parent=self.root)
             return
+        lock = self._queue_edit_lock("العامل يعمل")
+        if lock is None:
+            return
+        try:
+            self._reconcile_unknown_upload_locked()
+        finally:
+            lock.release()
+
+    def _reconcile_unknown_upload_locked(self):
         try:
             items = load_failed_queue()
             recovered, recovered_count = recover_interrupted_uploads(items, load_uploaded_ids())
@@ -5862,6 +5895,15 @@ class App:
         if self._watching or (worker is not None and worker.is_alive()):
             messagebox.showwarning("العامل يعمل", "أوقف العامل أو انتظر انتهاء الدورة قبل تعديل قائمة الانتظار.", parent=self.root)
             return
+        lock = self._queue_edit_lock("العامل يعمل")
+        if lock is None:
+            return
+        try:
+            self._release_policy_holds_locked()
+        finally:
+            lock.release()
+
+    def _release_policy_holds_locked(self):
         try:
             items = load_failed_queue()
             safety_count = sum(
@@ -8696,6 +8738,17 @@ class App:
                     self._log(reason)
                     record("rights_record_save_failed", reason, title=clip_data["title"])
                     return
+            # أثر قبل الإرسال: لو انقطع التشغيل بين آخر جزء والإيصال يبقى
+            # الفيديو على YouTube بلا سجل. الرفع الرئيسي يكتب نية في
+            # failed_queue، أما هنا فمعرّف "_shorts" لا يصلح مصدراً للكشط،
+            # لذلك نسجّل النية في الأرشيف لتصبح قابلة للاكتشاف.
+            record(
+                "shorts_upload_started",
+                "",
+                title=clip_data["title"],
+                account=ctx.get("account", ""),
+                note="بدأ إرسال Shorts؛ إن لم يصل إيصال فراجع YouTube Studio قبل أي إعادة.",
+            )
             upload_receipt_recorded = False
 
             def persist_short_receipt(youtube_id):
