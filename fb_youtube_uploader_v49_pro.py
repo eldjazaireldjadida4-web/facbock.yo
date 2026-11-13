@@ -108,7 +108,7 @@ from control_plane import (
     youtube_video_belongs_to_current_channel,
     remove_queue_item,
     upsert_queue_item,
-    UPLOAD_IN_PROGRESS,
+    PROTECTED_QUEUE_STATUSES,
     UPLOAD_RESULT_UNKNOWN,
     UPLOAD_REJECTED,
     UPLOAD_NOT_STARTED,
@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.2"
+__version__ = "4.49.3"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -516,6 +516,19 @@ def save_uploaded_id(video_id):
     _append_id(UPLOADED_IDS_FILE, video_id)
 
 
+def _active_uploaded_ids(receipts, uploaded_ids):
+    """يعيد (المرفوع فعلاً، المرفوض) من سجل الإيصالات.
+
+    فيديو رفضه YouTube بعد القبول يبقى في ``uploaded_ids.txt``؛ اعتباره
+    «مرفوعاً» كان يحذفه من قائمة الإعادة في الدورة التالية نهائياً.
+    """
+    rejected = {
+        source_id for source_id, record in (receipts or {}).items()
+        if isinstance(record, dict) and record.get("status") == "rejected"
+    }
+    return set(uploaded_ids or set()) - rejected, rejected
+
+
 def load_upload_receipts(path=None):
     path = UPLOAD_RECEIPTS_FILE if path is None else path
     store = _read_json(
@@ -773,9 +786,7 @@ def prune_failed_queue(items, max_age_days=14):
             stale = float(ts) < cutoff
         except (TypeError, ValueError):
             stale = False
-        if stale and item.get("last_error") not in {
-            UPLOAD_IN_PROGRESS, UPLOAD_RESULT_UNKNOWN, UPLOAD_REJECTED, "abandoned",
-        }:
+        if stale and item.get("last_error") not in PROTECTED_QUEUE_STATUSES:
             dropped.append(item)
         else:
             kept.append(item)
@@ -1173,11 +1184,13 @@ class QuotaManager:
         if self._k_used in state and self._k_date in state:
             self.date = state.get(self._k_date, "")
             try:
-                self.used = min(self.daily_limit, max(0, int(state.get(self._k_used, 0)))) if self.date == today else 0
+                # بلا قصّ على الحد: قصّ العداد عند التحميل ثم حفظه كان يجعل
+                # خفض الحد وإعادته يفتح مقاعد استُهلكت فعلاً.
+                self.used = max(0, int(state.get(self._k_used, 0))) if self.date == today else 0
             except (TypeError, ValueError):
                 self.used = 0
         else:
-            self.used = min(self.daily_limit, self._migrate_legacy_usage(state, today))
+            self.used = self._migrate_legacy_usage(state, today)
             if self.used and self.log_cb:
                 self.log_cb(f"نُقل عداد الرفع السابق إلى الحصة المشتركة: {self.used} / {self.daily_limit}")
         self.date = today
@@ -1199,10 +1212,8 @@ class QuotaManager:
                 old_units = max(0, int(value))
             except (TypeError, ValueError):
                 continue
-            if old_units >= LEGACY_DEFAULT_QUOTA_UNITS:
-                migrated += old_units // LEGACY_UPLOAD_COST_UNITS
-            else:
-                migrated += (old_units + LEGACY_UPLOAD_COST_UNITS - 1) // LEGACY_UPLOAD_COST_UNITS
+            # التقريب للأعلى كان يخترع رفعاً كاملاً من بقايا 500 وحدة.
+            migrated += old_units // LEGACY_UPLOAD_COST_UNITS
         return migrated
 
     def _persist(self):
@@ -1234,6 +1245,16 @@ class QuotaManager:
         except (TypeError, ValueError):
             count = 1
         self.used += count
+        self._persist()
+
+    def refund(self, count=1):
+        """يعيد مقعداً حُجز لرفع لم يبدأ فعلياً."""
+        self._refresh()
+        try:
+            count = max(1, int(count))
+        except (TypeError, ValueError):
+            count = 1
+        self.used = max(0, self.used - count)
         self._persist()
 
     def mark_exhausted(self):
@@ -3845,6 +3866,13 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                         log_cb("توقف الرفع بعد بدء جلسة YouTube؛ النتيجة غير مؤكدة، تحقق من YouTube Studio قبل إعادة المحاولة.")
                     else:
                         log_cb("أُوقف الرفع قبل إرسال أول جزء إلى YouTube؛ سيبقى آمناً لإعادة المحاولة.")
+                if not upload_request_started and quota_manager is not None:
+                    # الحصة تُحجز قبل أول جزء؛ إيقاف المستخدم هنا لم يستهلك
+                    # طلباً فعلياً، فإبقاء الخصم يحرق مقعداً كل إيقاف.
+                    try:
+                        quota_manager.refund()
+                    except Exception:
+                        logging.exception("تعذر إرجاع حصة رفع لم يبدأ")
                 return UPLOAD_RESULT_UNKNOWN if upload_request_started else UPLOAD_NOT_STARTED
             try:
                 upload_request_started = True
@@ -5620,10 +5648,11 @@ class App:
             if not unresolved:
                 messagebox.showinfo("لا توجد نتيجة معلّقة", "لا توجد محاولة رفع غير مؤكدة تحتاج إلى مطابقة.", parent=self.root)
                 return
-            choices = "\n".join(
-                f"{item.get('id', '')} — {item.get('upload_title', 'عنوان غير محفوظ')[:60]}"
-                for item in unresolved
-            )
+            def _label(entry):
+                account_note = f" [{entry['upload_account']}]" if entry.get("upload_account") else ""
+                return f"{entry.get('id', '')} — {entry.get('upload_title', 'عنوان غير محفوظ')[:60]}{account_note}"
+
+            choices = "\n".join(_label(entry) for entry in unresolved)
             source_id = simpledialog.askstring(
                 "مطابقة نتيجة الرفع",
                 "اختر معرّف المصدر من القائمة والصقه هنا:\n\n" + choices,
@@ -5650,6 +5679,17 @@ class App:
             account = self.acc_var.get().strip()
             if not account:
                 messagebox.showerror("حساب YouTube", "اختر حساب YouTube النشط أولاً.", parent=self.root)
+                return
+            stored_account = str(item.get("upload_account") or "").strip()
+            if stored_account and stored_account != account:
+                # التحقق على قناة أخرى يجيب «غير موجود» لفيديو موجود فعلاً،
+                # فيُعتمد للرفع مرة ثانية على الحساب الخطأ.
+                messagebox.showwarning(
+                    "حساب مختلف",
+                    f"هذه المحاولة نُفّذت على الحساب «{stored_account}» والحساب النشط الآن «{account}».\n"
+                    "بدّل الحساب النشط إلى الحساب الأصلي ثم أعد المحاولة؛ لن تُعتمد النتيجة على قناة أخرى.",
+                    parent=self.root,
+                )
                 return
             youtube, error = get_youtube(account, allow_interactive=False)
             if not youtube:
@@ -7116,12 +7156,11 @@ class App:
         cycle_started = time.time()
         ctx["facebook_network_unavailable"] = False
         ctx["facebook_auth_required"] = False
-        uploaded_ids = load_uploaded_ids()
         receipts = load_upload_receipts()
-        receipt_source_ids = {
-            source_id for source_id, record in receipts.items()
-            if record.get("status") != "rejected"
-        }
+        uploaded_ids, rejected_source_ids = _active_uploaded_ids(
+            receipts, load_uploaded_ids()
+        )
+        receipt_source_ids = set(receipts) - rejected_source_ids
         for source_id in receipt_source_ids - uploaded_ids:
             try:
                 save_uploaded_id(source_id)
@@ -8738,12 +8777,14 @@ class App:
         if _non_negative_int(item.get("attempts")) >= int(settings["max_attempts"]):
             save_seen_id(item["id"])
             seen_ids.add(item["id"])
+            # نسخة كاملة من العنصر: القالب القديم كان يمحو upload_title
+            # وحقوق النشر و_budget_ ومؤشرات المراجعة عند أول فشل.
             entry = {
-                "id": item["id"], "url": item["url"],
-                "page": item.get("page", ""), "attempts": item["attempts"],
+                **item,
+                "attempts": item["attempts"],
                 "last_error": "abandoned",
                 "failure_reason": reason,
-                "failed_at": item.get("failed_at") or time.time(),
+                "failed_at": time.time(),
                 **details,
             }
             failed_q[:] = upsert_queue_item(failed_q, entry)
@@ -8752,11 +8793,15 @@ class App:
                             "error": f"{reason} — {item['attempts']} محاولات", **details})
             self._log(f"توقفت إعادة المحاولة تلقائياً بعد {item['attempts']} محاولات: {item['id']}؛ حرّره يدوياً بعد إصلاح السبب.")
         else:
-            entry = {"id": item["id"], "url": item["url"],
-                     "page": item.get("page", ""), "attempts": item["attempts"],
-                     "last_error": reason,
-                     "failed_at": item.get("failed_at") or time.time(),
-                     **details}
+            entry = {
+                **item,
+                "attempts": item["attempts"],
+                "last_error": reason,
+                # آخر فشل لا أول فشل: عنصر يُعاد كل دورة لا يجوز أن ينتهي
+                # عمره في القائمة بينما العامل ما زال يحاوله.
+                "failed_at": time.time(),
+                **details,
+            }
             failed_q[:] = upsert_queue_item(failed_q, entry)
             self._log(f"أُضيف لقائمة إعادة المحاولة (محاولة {item['attempts']}/{settings['max_attempts']})")
         save_failed_queue(failed_q)
@@ -9268,9 +9313,100 @@ def run_cli(dry_run=False, once=False, preflight_only=False):
         interrupted = True
     return automation_exit_code(shim._uiq.result, interrupted=interrupted)
 
+STATE_LEDGERS = (
+    ("failed_queue.json", lambda: FAILED_QUEUE_FILE, list),
+    ("upload_receipts.json", lambda: UPLOAD_RECEIPTS_FILE, dict),
+    ("pages.json", lambda: PAGES_FILE, list),
+    ("accounts.json", lambda: ACCOUNTS_FILE, list),
+    ("state.json", lambda: STATE_FILE, dict),
+    ("channel_video_index.json", lambda: CHANNEL_INDEX_FILE, dict),
+)
+
+
+def _ledger_state(path, expected_type):
+    """ok / backup_ok / corrupt / missing — بلا تعديل أي ملف."""
+    if not os.path.exists(path):
+        return "missing"
+    for index, candidate in enumerate([path] + [f"{path}.bak{i}" for i in range(1, 4)]):
+        try:
+            with open(candidate, "r", encoding="utf-8") as source:
+                value = json.load(source)
+        except (OSError, ValueError):
+            continue
+        if isinstance(value, expected_type):
+            return "ok" if index == 0 else "backup_ok"
+    return "corrupt"
+
+
+def repair_state_files(*, dry_run=False):
+    """يعزل ملفات الحالة التالفة التي تمنع الإقلاع، مع الاحتفاظ بنسخة منها.
+
+    التطبيق يتوقف عمداً عند تلف سجل حرج (منعاً لإعادة رفع مكررة)، لكن بلا
+    مخرج كان المستخدم أمامه خيار واحد: حذف الملف يدوياً وفقدان سجل الإيصالات.
+    """
+    actions = []
+    for name, path_getter, expected_type in STATE_LEDGERS:
+        path = os.fspath(path_getter())
+        state = _ledger_state(path, expected_type)
+        if state == "corrupt":
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            target = f"{path}.corrupt-{stamp}"
+            action = {"file": name, "action": "quarantine", "target": target}
+            if not dry_run:
+                try:
+                    os.replace(path, target)
+                except OSError as error:
+                    action = {"file": name, "action": "failed", "error": str(error)}
+            actions.append(action)
+        elif state == "backup_ok":
+            actions.append({"file": name, "action": "restore_from_backup"})
+    return actions
+
+
+def _repair_state_cli():
+    actions = repair_state_files()
+    if not actions:
+        print("كل ملفات الحالة سليمة؛ لا شيء لعزله.")
+        return 0
+    failed = False
+    for action in actions:
+        if action["action"] == "quarantine":
+            print(f"عُزل {action['file']} → {os.path.basename(action['target'])}")
+            print("  راجع النسخة قبل الحذف؛ الملف الأصلي لم يعد موجوداً.")
+        elif action["action"] == "restore_from_backup":
+            print(f"سُيستعاد {action['file']} تلقائياً من نسخته الاحتياطية عند الإقلاع.")
+        else:
+            failed = True
+            print(f"تعذر عزل {action['file']}: {action.get('error', '')}")
+    if any(action["file"] == "upload_receipts.json" for action in actions):
+        print(
+            "تنبيه: عزل upload_receipts.json يُلغي سجل منع إعادة الرفع. "
+            "لا ترفع مصدراً قديماً قبل مراجعة YouTube Studio."
+        )
+    return 2 if failed else 0
+
+
 def gui_main():
     root = tk.Tk()
-    App(root)
+    try:
+        App(root)
+    except Exception as error:
+        logging.exception("تعذر بدء الواجهة")
+        try:
+            messagebox.showerror(
+                "تعذر بدء التشغيل",
+                f"{error}\n\nقد يكون أحد ملفات الحالة تالفاً. شغّل الأمر:\n"
+                "python fb_youtube_uploader_v49_pro.py --repair-state\n"
+                "ثم أعد فتح البرنامج. النسخة التالفة تُحفظ باسم .corrupt-* للمراجعة.",
+                parent=root,
+            )
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        return 2
     root.mainloop()
     return 0
 
@@ -9290,11 +9426,20 @@ def main(argv=None):
 
     parser.add_argument("--dry-run", action="store_true", help="محاكاة دون رفع؛ يتطلب --cli")
     parser.add_argument("--preflight", action="store_true", help="فحص كل متطلبات التشغيل دون سحب أو رفع")
+    parser.add_argument(
+        "--repair-state",
+        action="store_true",
+        help="عزل ملفات الحالة التالفة (نسخة .corrupt-*) حتى تعمل الواجهة من جديد",
+    )
     args = parser.parse_args(argv)
+    if args.repair_state and (args.cli or args.once or args.dry_run or args.preflight):
+        parser.error("--repair-state cannot be combined with --cli, --once, --dry-run, or --preflight")
     if args.preflight and (args.cli or args.once or args.dry_run):
         parser.error("--preflight cannot be combined with --cli, --once, or --dry-run")
     if (args.dry_run or args.once) and not args.cli:
         parser.error("--dry-run and --once require --cli")
+    if args.repair_state:
+        return _repair_state_cli()
     if args.preflight:
         return run_cli(preflight_only=True)
     if args.cli:

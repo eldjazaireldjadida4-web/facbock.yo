@@ -26,6 +26,21 @@ UPLOAD_RESULT_UNKNOWN = "upload_result_unknown"
 UPLOAD_NOT_STARTED = "upload_not_started"
 UPLOAD_REJECTED = "upload_rejected"
 MANUAL_RETRY_APPROVED = "manual_retry_approved"
+# حالات تنتظر قراراً بشرياً أو تحقيقاً: لا يجوز أن يمحوها تقليم العمر.
+PROTECTED_QUEUE_STATUSES = frozenset({
+    UPLOAD_IN_PROGRESS,
+    UPLOAD_RESULT_UNKNOWN,
+    UPLOAD_REJECTED,
+    MANUAL_RETRY_APPROVED,
+    "abandoned",
+    "content_safety_review_required",
+    "publication_approval_required",
+    "rights_review_required",
+    "duplicate_review_required",
+    "invalid_title",
+    "invalid_description",
+    "invalid_tags",
+})
 
 
 def begin_upload_attempt(
@@ -255,6 +270,9 @@ def reconcile_upload_result(
                 continue
             item["last_error"] = MANUAL_RETRY_APPROVED
             item["manual_retry_approved_at"] = time.time()
+            # بلا تحديث الطابع الزمني كان التقليم يحذف العنصر المعتمد قبل
+            # أن يعود للدوران، لأن عمره يُحسب من أول فشل.
+            item["failed_at"] = item["manual_retry_approved_at"]
             decision = "retry"
         result.append(item)
     return result, decision
