@@ -8,6 +8,7 @@ ai_keys.json
 accounts.json
 uploaded_ids.txt
 upload_receipts.json
+upload_receipts_archive.json
 seen_ids.txt
 stats.json
 page_status.json

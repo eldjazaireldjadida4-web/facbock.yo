@@ -18,7 +18,7 @@ def test_ui_defaults_cover_all_keys():
     assert len(vals) == len(pro.UI_KEYS)
     assert vals[("SETTINGS", "ACCOUNT")] == "account1"
     assert vals[("SETTINGS", "PRIVACY")] == "private"
-    assert vals[("SETTINGS", "DAILY_UPLOAD_LIMIT")] == "100"
+    assert vals[("SETTINGS", "DAILY_UPLOAD_LIMIT")] == str(pro.DEFAULT_DAILY_UPLOAD_LIMIT)
     assert vals[("WATCH", "INTERVAL_MINUTES")] == "10"
     assert vals[("AI", "MODEL")] == pro.GEMINI_MODELS[0]
     assert vals[("AI", "TRANSCRIBE_LOCAL")] == "false"

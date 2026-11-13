@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.3"
+__version__ = "4.49.4"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -185,6 +185,9 @@ PAGE_STATUS_FILE    = _app_path("page_status.json")
 STATE_FILE          = _app_path("state.json")
 FAILED_QUEUE_FILE   = _app_path("failed_queue.json")
 UPLOAD_RECEIPTS_FILE = _app_path("upload_receipts.json")
+UPLOAD_RECEIPTS_ARCHIVE_FILE = _app_path("upload_receipts_archive.json")
+# بعد سنة يصبح الإيصال أرشيفاً بارداً؛ منع التكرار النشط يبقى في uploaded_ids.
+RECEIPT_ARCHIVE_MAX_AGE_DAYS = 365
 HISTORY_FILE        = _app_path("history.jsonl")
 HISTORY_MAX_BYTES   = 10_000_000   # تدوير الأرشيف عند 10MB (v4.24)
 HISTORY_BACKUPS     = 3
@@ -516,6 +519,21 @@ def save_uploaded_id(video_id):
     _append_id(UPLOADED_IDS_FILE, video_id)
 
 
+_RECEIPTS_COMPACTED = False
+
+
+def _maybe_compact_receipts():
+    """أرشفة الإيصالات القديمة مرة واحدة في كل تشغيل، لا في كل دورة."""
+    global _RECEIPTS_COMPACTED
+    if _RECEIPTS_COMPACTED:
+        return
+    _RECEIPTS_COMPACTED = True
+    try:
+        compact_upload_receipts()
+    except Exception:
+        logging.exception("تعذر أرشفة إيصالات الرفع القديمة؛ استُمر التشغيل بالسجل الكامل")
+
+
 def _active_uploaded_ids(receipts, uploaded_ids):
     """يعيد (المرفوع فعلاً، المرفوض) من سجل الإيصالات.
 
@@ -548,6 +566,58 @@ def load_upload_receipts(path=None):
             raise RuntimeError("upload_receipts.json contains an invalid receipt; no upload was started.")
         receipts[source_id] = dict(record)
     return receipts
+
+
+def load_archived_receipts(path=None):
+    """أرشيف الإيصالات البارد؛ فشله لا يوقف التشغيل (ليس مرجع منع التكرار)."""
+    path = UPLOAD_RECEIPTS_ARCHIVE_FILE if path is None else path
+    store = _read_json(path, {"schema_version": 1, "receipts": {}}, expected_type=dict)
+    receipts = store.get("receipts") if isinstance(store, dict) else None
+    if not isinstance(receipts, dict):
+        logging.warning("ملف أرشيف الإيصالات غير صالح؛ عُومل كفارغ.")
+        return {}
+    return {key: dict(value) for key, value in receipts.items() if isinstance(value, dict)}
+
+
+def _receipt_timestamp(record):
+    raw = str((record or {}).get("confirmed_at") or (record or {}).get("rejected_at") or "")
+    try:
+        moment = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def compact_upload_receipts(
+    *, max_age_days=RECEIPT_ARCHIVE_MAX_AGE_DAYS, now=None, path=None, archive_path=None
+):
+    """ينقل الإيصالات الأقدم من سنة إلى أرشيف منفصل. يعيد عدد المنقول.
+
+    الملف النشط كان ينمو سجلاً لكل رفع ويُعاد قراءته ونسخه بالكامل عند كل
+    رفع. منع التكرار النشط يبقى في uploaded_ids.txt.
+    """
+    if max_age_days <= 0:
+        return 0
+    path = UPLOAD_RECEIPTS_FILE if path is None else path
+    archive_path = UPLOAD_RECEIPTS_ARCHIVE_FILE if archive_path is None else archive_path
+    receipts = load_upload_receipts(path)
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=max_age_days)
+    kept, moved = {}, {}
+    for source_id, record in receipts.items():
+        stamped = _receipt_timestamp(record)
+        if stamped is not None and stamped < cutoff:
+            moved[source_id] = record
+        else:
+            kept[source_id] = record
+    if not moved:
+        return 0
+    archive = load_archived_receipts(archive_path)
+    for source_id, record in moved.items():
+        archive.setdefault(source_id, record)
+    save_upload_receipts(kept, path)
+    _write_json(archive_path, {"schema_version": 1, "receipts": archive})
+    logging.info("أُرشف %d إيصال رفع أقدم من %d يوماً", len(moved), max_age_days)
+    return len(moved)
 
 
 def save_upload_receipts(receipts, path=None):
@@ -1135,17 +1205,18 @@ def remember_content(title, media_hash=None, frame_fingerprint=None, video_id=No
         state["video_frame_fingerprints"] = saved[-2000:]
     save_state(state)
 
-DEFAULT_DAILY_UPLOAD_LIMIT = 100
 LEGACY_DEFAULT_QUOTA_UNITS = 10000
 LEGACY_UPLOAD_COST_UNITS = 1600
+# حصة مشروع Google الافتراضية 10,000 وحدة يومياً، وvideos.insert يكلّف 1,600،
+# فالسقف الحقيقي 6 رفعات. الحد المحلي 100 كان لا يتدخل أبداً قبل أن يرفض
+# YouTube الطلب السابع برسالة حصة مربكة.
+DEFAULT_DAILY_UPLOAD_LIMIT = LEGACY_DEFAULT_QUOTA_UNITS // LEGACY_UPLOAD_COST_UNITS
 
 
 def _legacy_quota_to_upload_limit(value):
     try:
         units = max(1, int(value))
     except (TypeError, ValueError):
-        return DEFAULT_DAILY_UPLOAD_LIMIT
-    if units == LEGACY_DEFAULT_QUOTA_UNITS:
         return DEFAULT_DAILY_UPLOAD_LIMIT
     return max(1, units // LEGACY_UPLOAD_COST_UNITS)
 
@@ -7156,6 +7227,7 @@ class App:
         cycle_started = time.time()
         ctx["facebook_network_unavailable"] = False
         ctx["facebook_auth_required"] = False
+        _maybe_compact_receipts()
         receipts = load_upload_receipts()
         uploaded_ids, rejected_source_ids = _active_uploaded_ids(
             receipts, load_uploaded_ids()

@@ -46,8 +46,9 @@ def _fake_state(monkeypatch, initial=None):
     return state, today.date().isoformat()
 
 
-def test_new_quota_setting_defaults_to_100_uploads():
-    assert app._daily_upload_limit_from_config(_config("[SETTINGS]\n")) == 100
+def test_new_quota_setting_defaults_to_the_free_tier_upload_count():
+    # 10,000 وحدة / 1,600 لكل رفع = 6 رفعات فعلية في المشروع المجاني.
+    assert app._daily_upload_limit_from_config(_config("[SETTINGS]\n")) == 6
     assert app._daily_upload_limit_from_config(
         _config("[SETTINGS]\nDAILY_UPLOAD_LIMIT = 37\nDAILY_QUOTA = 10000\n")
     ) == 37
@@ -56,7 +57,7 @@ def test_new_quota_setting_defaults_to_100_uploads():
 def test_legacy_quota_setting_migrates_to_upload_count():
     assert app._daily_upload_limit_from_config(
         _config("[SETTINGS]\nDAILY_QUOTA = 10000\n")
-    ) == 100
+    ) == 6
     assert app._daily_upload_limit_from_config(
         _config("[SETTINGS]\nDAILY_QUOTA = 8000\n")
     ) == 5
