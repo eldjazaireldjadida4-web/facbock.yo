@@ -36,8 +36,14 @@ def _load_config(app_directory):
     """يقرأ config.ini من مجلد التطبيق ويطبق ترحيل بوابة الحقوق في الذاكرة."""
     config = configparser.ConfigParser(interpolation=None)
     error = None
+    config_path = os.path.join(app_directory, "config.ini")
     try:
-        config.read(os.path.join(app_directory, "config.ini"), encoding="utf-8")
+        # read() يبتلع OSError ويعيد قائمة فارغة، فيظهر «الملف موجود» مع أن
+        # كل القيم المقروءة افتراضية. الفتح الصريح يجعل فشل الصلاحية مرئياً.
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config.read_file(handle)
+    except FileNotFoundError:
+        pass
     except (configparser.Error, UnicodeError, OSError) as read_error:
         error = read_error
     if error is None:
@@ -132,13 +138,18 @@ def _collect_checks(add_check, config, config_error, app_directory):
         try:
             with open(secrets_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            kind = "installed" if "installed" in data else ("web" if "web" in data else None)
-            if kind and data[kind].get("client_id") and data[kind].get("client_secret"):
+            # ملف فارغ أو {"installed": null} هو الحالة الشائعة لتنزيل ناقص؛
+            # كان يُسقط doctor بترايس باك قبل أن يطبع أي حكم.
+            kind = None
+            if isinstance(data, dict):
+                kind = "installed" if "installed" in data else ("web" if "web" in data else None)
+            section = data.get(kind) if isinstance(data, dict) and kind else None
+            if isinstance(section, dict) and section.get("client_id") and section.get("client_secret"):
                 note = "نوع Desktop (مناسب)" if kind == "installed" else "نوع Web — قد لا يناسب الربط المحلي"
                 add_check("ملف تفويض Google", OK if kind == "installed" else WARN, note)
             else:
                 add_check("ملف تفويض Google", BAD, "البنية غير مكتملة", "أعد تنزيل ملف OAuth")
-        except (ValueError, OSError) as error:
+        except (ValueError, OSError, TypeError) as error:
             add_check("ملف تفويض Google", BAD, f"غير صالح: {error}", "أعد تنزيل ملف OAuth")
 
     # 7) جلسة Facebook
@@ -251,6 +262,9 @@ def _collect_checks(add_check, config, config_error, app_directory):
     if os.path.exists(os.path.join(app_directory, "config.ini")):
         if not config_error:
             add_check("ملف config.ini", OK, "موجود")
+        else:
+            add_check("ملف config.ini", BAD, f"موجود لكن تعذّرت قراءته: {config_error}",
+                      "افحص صلاحيات الملف وترميزه؛ القيم المقيمة أدناه افتراضية وليست من ملفك")
     else:
         add_check("ملف config.ini", INFO, "غير موجود — ستُستخدم القيم الافتراضية",
                   "انسخ config.ini.example إلى config.ini إن أردت تخصيص المسارات")
@@ -268,7 +282,11 @@ def _collect_checks(add_check, config, config_error, app_directory):
         add_check("الكتابة على القرص", BAD, str(error), "شغّل البرنامج من مجلد تملك صلاحية الكتابة عليه")
 
     proxy_raw = (_config_value("WATCH", "PROXY", "") or "").strip()
-    force_ipv4 = (_config_value("WATCH", "FORCE_IPV4", "true").strip().lower() in ("1", "true", "yes"))
+    force_ipv4 = _config_boolean("WATCH", "FORCE_IPV4", True)
+    if force_ipv4 is None:
+        add_check("تفضيل IPv4", WARN, "قيمة FORCE_IPV4 غير صالحة؛ استُخدم true",
+                  "استخدم true أو false بصيغة يقبلها configparser")
+        force_ipv4 = True
     try:
         network_timeout = max(
             10,

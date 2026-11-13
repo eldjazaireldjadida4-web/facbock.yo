@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import socket
+import threading
 import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -58,6 +59,24 @@ def facebook_login_required(current_url: str, page_source: str = "") -> bool:
     return facebook_auth_block_reason(current_url, page_source) is not None
 
 
+def _resolve_bounded(host: str, port: int, family: int, timeout: float):
+    """يحلّ الاسم ضمن مهلة معلنة؛ getaddrinfo لا تقبل مهلة وقد تعلّق دقائق."""
+    outcome: dict = {}
+
+    def resolve():
+        try:
+            outcome["value"] = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except OSError as error:
+            outcome["error"] = error
+
+    worker = threading.Thread(target=resolve, daemon=True, name="facebook-dns-probe")
+    worker.start()
+    worker.join(max(0.0, timeout))
+    if worker.is_alive():
+        return []
+    return outcome.get("value") or []
+
+
 def facebook_network_route(
     proxy_url: str = "",
     force_ipv4: bool = True,
@@ -89,13 +108,17 @@ def facebook_network_route(
 
     requested_families = (socket.AF_INET, socket.AF_INET6) if force_ipv4 else (socket.AF_UNSPEC,)
     grouped = {}
+    deadlines = {}
     resolver_order = []
     seen = set()
     for family in requested_families:
-        try:
-            resolved = socket.getaddrinfo("www.facebook.com", 443, family, socket.SOCK_STREAM)
-        except OSError:
+        family_deadline = time.monotonic() + timeout
+        resolved = _resolve_bounded(
+            "www.facebook.com", 443, family, max(0.0, family_deadline - time.monotonic())
+        )
+        if not resolved:
             continue
+        deadlines[family] = family_deadline
         for address_family, socktype, proto, _, address in resolved:
             key = (address_family, tuple(address))
             if key in seen:
@@ -115,7 +138,7 @@ def facebook_network_route(
 
     for address_family in family_order:
         addresses = grouped[address_family]
-        family_deadline = time.monotonic() + timeout
+        family_deadline = deadlines.get(address_family, time.monotonic() + timeout)
         for address_index, (socktype, proto, address) in enumerate(addresses):
             remaining = family_deadline - time.monotonic()
             if remaining <= 0:

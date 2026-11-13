@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.0"
+__version__ = "4.49.1"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -3994,9 +3994,6 @@ class App:
         self.stats    = load_stats()
         self.pages    = load_pages()
         self.page_status = load_page_status()
-        stale_removed = cleanup_stale_attempt_dirs(VIDEO_DIRECTORY)
-        if stale_removed:
-            self._logq.put(("log", f"حُذف {stale_removed} مجلد تنزيل مؤقت متبقيًا من تشغيل سابق انهار."))
 
         # تخطيط grid (صف 0 رأس، صف 1 نوتبوك يتمدد، صف 2-3 قضيب الأزرار):
         # grid يضمن ظهور قضيب الأزرار مهما كان ترتيب البناء،
@@ -4008,6 +4005,7 @@ class App:
         self._build_nb()
         self._build_footer()
         self._load_ui_settings()
+        self._sweep_stale_downloads()
         self._poll()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         if self.autostart_var.get():
@@ -4363,6 +4361,19 @@ class App:
             except Exception:
                 continue
 
+    def _sweep_stale_downloads(self):
+        """ينظف بقايا المحاولات في المجلد المضبوط فعلياً، لا الافتراضي فقط."""
+        configured = _app_path(self.video_directory_e.get().strip() or VIDEO_DIRECTORY)
+        target = configured if os.path.isdir(configured) else VIDEO_DIRECTORY
+        try:
+            removed = cleanup_stale_attempt_dirs(target)
+        except OSError:
+            logging.exception("تعذر تنظيف مجلدات التنزيل المؤقتة القديمة")
+            return
+        if removed:
+            # كان يُوضع tuple خاطئ في طابور السجل فيظهر السطر كنص «log».
+            self._log(f"حُذف {removed} مجلد تنزيل مؤقت متبقٍ من تشغيل سابق انهار.")
+
     def _load_ui_settings(self):
         """يعيد كل إعدادات الواجهة من config.ini — لا إعادة إدخال بعد إعادة الفتح."""
         try:
@@ -4652,6 +4663,8 @@ class App:
             return
         try:
             sc, lm = int(self.pg_scroll.get()), int(self.pg_limit.get())
+            if not 1 <= sc <= 100 or not 1 <= lm <= 100:
+                raise ValueError("scroll/limit out of range")
             self.ptree.insert("", "end", values=("✓", url, self.pg_name.val().strip(), sc, lm))
             self.pg_url.delete(0, "end"); self.pg_url._put()
             self._persist_pages_from_tree()

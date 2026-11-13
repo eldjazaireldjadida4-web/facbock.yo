@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import functools
+import logging
 import os
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -17,7 +19,9 @@ class TranscriptionCancelled(Exception):
     pass
 
 
-@functools.lru_cache(maxsize=2)
+# نموذج واحد فقط يُحفظ: كل وزن يستهلك مئات الميغابايت، والاحتفاظ باثنين لا
+# يخدم إلا تبديلاً يدوياً نادراً.
+@functools.lru_cache(maxsize=1)
 def _load_model(model_name: str):
     from faster_whisper import WhisperModel
 
@@ -29,6 +33,12 @@ def _load_model(model_name: str):
         cpu_threads=cpu_threads,
         num_workers=1,
     )
+
+
+# WhisperModel ليس موثّقاً كآمن للاستدعاء المتوازي، ومثيله مشترك عبر
+# lru_cache؛ قفل واحد يمنع تفريغين متداخلين على النموذج نفسه (دورة مراقبة
+# ثانية أو اختبار من الواجهة أثناء عمل العامل).
+_MODEL_LOCK = threading.Lock()
 
 
 def transcribe_video_file(
@@ -56,28 +66,39 @@ def transcribe_video_file(
         log_cb(f"يبدأ التفريغ الصوتي محلياً بنموذج {selected_model}; قد يُنزّل النموذج عند أول استخدام.")
 
     try:
-        model = _load_model(selected_model)
-        segments, info = model.transcribe(str(path), beam_size=3, vad_filter=True)
-        transcript_parts = []
-        transcript_length = 0
-        for segment in segments:
-            if stop_event is not None and stop_event.is_set():
-                raise TranscriptionCancelled()
-            text = str(getattr(segment, "text", "") or "").strip()
-            if not text:
-                continue
-            remaining = MAX_TRANSCRIPT_CHARS - transcript_length
-            if remaining <= 0:
-                break
-            if transcript_parts:
-                transcript_parts.append(" ")
-                transcript_length += 1
-                remaining -= 1
-            transcript_parts.append(text[:remaining])
-            transcript_length += min(len(text), remaining)
-            if len(text) > remaining:
-                break
-        transcript = "".join(transcript_parts).strip()
+        with _MODEL_LOCK:
+            model = _load_model(selected_model)
+            segments, info = model.transcribe(str(path), beam_size=3, vad_filter=True)
+            transcript_parts = []
+            transcript_length = 0
+            try:
+                for segment in segments:
+                    if stop_event is not None and stop_event.is_set():
+                        raise TranscriptionCancelled()
+                    text = str(getattr(segment, "text", "") or "").strip()
+                    if not text:
+                        continue
+                    remaining = MAX_TRANSCRIPT_CHARS - transcript_length
+                    if remaining <= 0:
+                        break
+                    if transcript_parts:
+                        transcript_parts.append(" ")
+                        transcript_length += 1
+                        remaining -= 1
+                    transcript_parts.append(text[:remaining])
+                    transcript_length += min(len(text), remaining)
+                    if len(text) > remaining:
+                        break
+            finally:
+                # إلغاء التفريغ كان يهجر المولّد مفتوحاً، فيبقى النموذج
+                # يعمل على المقطع بعد أن يظن المستدعي أن المهمة توقفت.
+                close = getattr(segments, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logging.debug("تعذر إغلاق مولّد التفريغ", exc_info=True)
+            transcript = "".join(transcript_parts).strip()
     except (TranscriptionCancelled, LocalTranscriptionError):
         raise
     except ImportError as error:

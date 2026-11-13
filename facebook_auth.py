@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
+
+from safe_logging import redact_sensitive_text
 
 
 FACEBOOK_AUTH_COOKIE_NAMES = frozenset({"c_user", "xs"})
@@ -149,6 +152,7 @@ def load_facebook_cookies(
         "loaded_cookie_count": 0,
         "rejected_cookie_count": 0,
         "session_cookies_loaded": [],
+        "navigation_failed": False,
     }
     if not cookies:
         if log_cb:
@@ -168,14 +172,44 @@ def load_facebook_cookies(
         driver.set_page_load_timeout(page_load_timeout)
     except Exception:
         pass
-    driver.get(_FACEBOOK_HOME)
+    try:
+        driver.get(_FACEBOOK_HOME)
+    except Exception as error:
+        # فيضان استثناء هنا كان يُسقط تحميل الكوكيز صامتاً في المستدعي
+        # (except Exception: pass هناك)، فيُكشط الموقع زائراً غير مسجل.
+        report["navigation_failed"] = True
+        logging.warning(
+            "تعذر فتح facebook.com لتحميل الكوكيز: %s",
+            redact_sensitive_text(str(error))[:200],
+        )
+        if log_cb:
+            log_cb("تعذر فتح facebook.com لتحميل كوكيز الجلسة؛ سيعمل الكشط دون تسجيل دخول.")
+        return report
     time.sleep(1)
     current_host = "www.facebook.com"
     loaded_auth_names = set()
+    host_navigations = 0
+    max_host_navigations = 5
     for cookie_data in cookies:
         cookie_host = cookie_data["domain"].lstrip(".").lower()
         if not cookie_data["include_subdomains"] and cookie_host != current_host:
-            driver.get(f"https://{cookie_host}/")
+            # تصدير عادي يحمل كوكيز host-only لعشرات المضيفات؛ كل تنقل
+            # صفحة كاملة قد يستهلك حتى مهلة التحميل. نحدّ التنقلات ونعدّ
+            # ما تعذر إعداده بدل تعليق الكشط دقائق قبل كل دورة.
+            if host_navigations >= max_host_navigations:
+                report["rejected_cookie_count"] += 1
+                continue
+            try:
+                driver.get(f"https://{cookie_host}/")
+            except Exception as error:
+                logging.warning(
+                    "تعذر فتح %s لتحميل كوكيزه: %s",
+                    cookie_host,
+                    redact_sensitive_text(str(error))[:200],
+                )
+                report["rejected_cookie_count"] += 1
+                continue
+            host_navigations += 1
             current_host = cookie_host
         cookie = {
             "name": cookie_data["name"],

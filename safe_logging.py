@@ -68,6 +68,7 @@ def redact_sensitive_text(value: object) -> str:
     text = _BEARER_RE.sub(r"\1[REDACTED]", text)
     text = _BASIC_RE.sub(r"\1[REDACTED]", text)
     text = _ASSIGNMENT_RE.sub(r"\1\2[REDACTED]\4", text)
+    text = _TELEGRAM_BOT_RE.sub(r"\1[REDACTED]", text)
     text = _KEY_TOKEN_RE.sub("[REDACTED]", text)
     text = _JWT_RE.sub("[REDACTED]", text)
     return text

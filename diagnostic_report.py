@@ -19,10 +19,12 @@ from content_safety import (
     migrate_legacy_rights_gate_config,
     validate_automatic_rights_settings,
 )
+from control_plane import validate_content_review_settings
 from facebook_auth import facebook_cookie_setup_status
 from facebook_scraper import DEFAULT_NETWORK_PREFLIGHT_TIMEOUT
+from safe_logging import redact_sensitive_text
 
-APP_VERSION = "4.49.0"
+APP_VERSION = "4.49.1"
 REPORT_DIRECTORY = "reports"
 NETWORK_ERROR_MARKERS = (
     "network",
@@ -76,6 +78,8 @@ CATEGORY_LABELS = {
     "upload": "رفع الفيديو",
     "runtime": "خطأ تشغيل عام",
     "configuration": "إعدادات التشغيل",
+    "content_review": "مراجعة المحتوى (OUSSAMA Cutter)",
+    "logs_unreadable": "ملفات السجل",
     "pages": "قائمة صفحات Facebook",
     "queue_file": "ملف قائمة الانتظار",
     "pending_queue": "عناصر قيد الانتظار",
@@ -106,6 +110,8 @@ CATEGORY_GUIDANCE = {
     "proxy_unreachable": "تحقق من تشغيل خدمة الوكيل ومن عنوانها ومنفذها؛ لا تشارك اسم المستخدم أو كلمة المرور.",
     "network_preflight_disabled": "فعّل فحص الشبكة قبل التشغيل لتجنّب دورات بلا اتصال.",
     "facebook_proxy_unverified": "المنفذ يستجيب، لكن يلزم اختبار صفحة Facebook للتأكد من أن الوكيل يصل إلى الوجهة.",
+    "content_review": "افتح الاستوديو > مراجعة المحتوى واضبط مجلد OUSSAMA Cutter (وpython إن لزم) أو عطّل الخيار؛ التطبيق يرفض بدء الدورة بهذه الإعدادات.",
+    "logs_unreadable": "افحص صلاحيات ملفات السجل في مجلد البرنامج؛ التقرير لم يستطع قراءتها فلا تعتمد على غياب الأخطاء.",
 }
 
 
@@ -275,7 +281,11 @@ def _classify_error(line: str):
 
 
 def _safe_error_excerpt(line: str) -> str:
-    text = " ".join(str(line or "").replace("\x00", " ").split())
+    # التقرير ملف يُشارَك خارج الجهاز؛ نبدأ بالمنقّح المُختبَر في safe_logging
+    # (يشمل الرموز بصيغ Google/Slack/GitHub وBasic/Bearer وأي مخطط URL) بدل
+    # الاعتماد على نسخة أضعف هنا.
+    text = redact_sensitive_text(str(line or "").replace("\x00", " "))
+    text = " ".join(text.split())
     text = SECRET_HEADER_PATTERN.sub(lambda match: f"{match.group(1)}=[مخفي]", text)
     text = SECRET_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}=[مخفي]", text)
     text = PRIVATE_FIELD_PATTERN.sub(lambda match: f"{match.group(1)}=[محتوى محذوف]", text)
@@ -293,18 +303,37 @@ def _safe_error_excerpt(line: str) -> str:
     return text[:240]
 
 
-def _problem_lines(root: Path):
-    records = []
+def _log_sources(root: Path):
     log_sources = []
     for name, backup_count in (("automation.log", 5), ("errors.log", 3)):
         log_sources.extend(root / f"{name}.{index}" for index in range(backup_count, 0, -1))
         log_sources.append(root / name)
-    for path in log_sources:
+    return log_sources
+
+
+def _unreadable_log_sources(root: Path) -> list[str]:
+    """أسماء ملفات سجل موجودة لكن لا يمكن قراءتها (صلاحيات/قفل)."""
+    unreadable = []
+    for path in _log_sources(root):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            with open(path, "rb"):
+                pass
+        except OSError:
+            unreadable.append(path.name)
+    return unreadable
+
+
+def _problem_lines(root: Path):
+    records = []
+    for path in _log_sources(root):
         try:
             if path.is_symlink() or not path.is_file():
                 continue
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
+            # الملفات غير المقروءة يُبلَّغ عنها عبر _unreadable_log_sources.
             continue
         offset = max(0, len(lines) - 500)
         for line_number, line in enumerate(lines[-500:], start=offset + 1):
@@ -414,6 +443,15 @@ def collect_diagnostics(app_dir: str, version: str = APP_VERSION, now: datetime 
         issues.append({"category": "configuration", "severity": "error" if config_state == "invalid" else "warning"})
     if rights_errors:
         issues.append({"category": "rights", "severity": "error"})
+    # التطبيق يرفض بدء أي دورة بهذه الإعدادات، فالتقرير يجب ألا يقول
+    # «لا مانع واضح» بينما هو نفسه السبب.
+    content_review_errors = validate_content_review_settings(
+        _cfg_bool(config, "SAFETY", "ENABLED", False),
+        _cfg(config, "SAFETY", "CUTTER_ROOT", ""),
+        _cfg(config, "SAFETY", "CUTTER_PYTHON", ""),
+    )
+    if content_review_errors:
+        issues.append({"category": "content_review", "severity": "error"})
     direct_facebook_reachable = any(item.get("tcp") == "reachable" for item in facebook.values())
     proxy_reachable = bool(proxy and any(item.get("tcp") == "reachable" for item in proxy.values()))
     if not direct_facebook_reachable and not proxy_reachable:
@@ -443,6 +481,10 @@ def collect_diagnostics(app_dir: str, version: str = APP_VERSION, now: datetime 
     if not direct_facebook_reachable and proxy_reachable:
         issues.append({"category": "facebook_proxy_unverified", "severity": "warning"})
 
+    unreadable_logs = _unreadable_log_sources(root)
+    if unreadable_logs:
+        issues.append({"category": "logs_unreadable", "severity": "warning"})
+
     return {
         "created": created.isoformat(timespec="seconds"),
         "version": str(version),
@@ -468,6 +510,7 @@ def collect_diagnostics(app_dir: str, version: str = APP_VERSION, now: datetime 
         "queue": queue,
         "disk": {"free_gb": free_gb, "minimum_gb": minimum_disk_gb},
         "errors": _error_summaries(root),
+        "unreadable_logs": unreadable_logs,
         "issues": issues,
     }
 
@@ -522,6 +565,12 @@ def format_report(data: dict) -> str:
                 f"آخر تفاصيل آمنة: `{detail}`. "
                 f"{CATEGORY_GUIDANCE.get(error['category'], '')}"
             )
+    elif data.get("unreadable_logs"):
+        lines.append(
+            "- تعذرت قراءة ملفات سجل موجودة ("
+            + "، ".join(f"`{name}`" for name in data["unreadable_logs"])
+            + ")؛ غياب رسائل الخطأ أعلاه لا يعني نظافة السجلات. افحص صلاحيات الملفات."
+        )
     else:
         lines.append("- لم تُرصد رسائل خطأ أو تحذير محفوظة في السجلات المحلية.")
     lines.extend([

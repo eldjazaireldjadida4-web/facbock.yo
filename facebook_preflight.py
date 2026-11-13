@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -90,9 +91,16 @@ def probe_facebook_page_access(
 
     try:
         try:
-            driver.set_page_load_timeout(max(5, min(int(page_timeout), 30)))
+            timeout_value = max(5, min(int(page_timeout), 30))
+        except (TypeError, ValueError):
+            timeout_value = 20
+        try:
+            driver.set_page_load_timeout(timeout_value)
         except Exception:
-            pass
+            try:
+                driver.set_page_load_timeout(20)
+            except Exception:
+                logging.warning("تعذر ضبط مهلة تحميل الصفحة في Chrome؛ قد يستغرق الفحص أطول.")
 
         if cookies_enabled:
             try:
@@ -146,8 +154,17 @@ def probe_facebook_page_access(
 
         try:
             current_url = str(getattr(driver, "current_url", "") or "")
-            page_source = str(getattr(driver, "page_source", "") or "")
+            # بعد انتهاء مهلة التحميل يرد ChromeDriver عادة بـ"Timed out
+            # receiving message from renderer" عند قراءة page_source، فيُصنَّف
+            # عطل متصفح بينما المشكلة مهلة شبكة.
+            page_source = "" if timed_out else str(getattr(driver, "page_source", "") or "")
         except Exception:
+            if timed_out:
+                return _result(
+                    "page_timeout",
+                    "انتهت مهلة تحميل الصفحة ولم يستجب Chrome لقراءة النتيجة. أعد الاختبار أو افحص الشبكة.",
+                    network_route,
+                )
             return _result("browser_error", "تعذر قراءة نتيجة الاختبار من Chrome.", network_route)
 
         auth = auth_reason(current_url, page_source)
