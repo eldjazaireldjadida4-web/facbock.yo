@@ -130,6 +130,19 @@ def _store_report(report: dict, destination: Path) -> None:
         raise
 
 
+def _review_command(python_path, video, title, caption):
+    """أمر المراجعة بصيغة لا تفسّر قيمة تبدأ بـ«-» كخيار.
+
+    argparse يقبل ``--title=-x`` في كل الأحوال، ويستهلك ``-x`` كخيار إذا
+    جاء منفصلاً — فيفشل الطفل ويُحجب الفيديو نهائياً.
+    """
+    command = [str(python_path), "-m", "scripts.upload_content_review"]
+    for name, value in (("--video", video), ("--title", title or ""), ("--caption", caption or "")):
+        text = str(value)
+        command.extend([f"{name}={text}"] if text.startswith("-") else [name, text])
+    return command
+
+
 def run_review(
     video_path: str,
     title: str,
@@ -161,11 +174,7 @@ def run_review(
         python_path = next((item for item in candidates if item.is_file()), Path(sys.executable))
     python_path = python_path.resolve()
     destination = video.with_name(video.name + ".safety-review.json")
-    command = [
-        str(python_path), "-m", "scripts.upload_content_review",
-        "--video", str(video), "--title", str(title or ""),
-        "--caption", str(caption or ""),
-    ]
+    command = _review_command(python_path, video, title, caption)
     try:
         with tempfile.TemporaryDirectory(prefix=".content-review-", dir=str(video.parent)) as folder:
             report_path = Path(folder) / "review.json"

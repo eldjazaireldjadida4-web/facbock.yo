@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.1"
+__version__ = "4.49.2"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -282,6 +282,28 @@ def pt_now():
 # ════════════════════════════════════════════════════
 # HELPERS — DATA & UTILS
 # ════════════════════════════════════════════════════
+# يمنع أن يقرأ خيطان إيصالات الرفع ويحفظا نسختين متداخلتين (آخر كاتب يفوز).
+_STATE_LOCK = threading.RLock()
+
+
+def _preserve_corrupt_copy(path):
+    """يحفظ نسخة من ملف حالة تالف قبل استبداله، للتشخيص لا للاستخدام."""
+    try:
+        if not os.path.isfile(path) or os.path.islink(path):
+            return None
+        if os.path.getsize(path) > 5 * 1024 * 1024:
+            return None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        destination = f"{path}.corrupt-{stamp}"
+        if os.path.exists(destination):
+            return destination
+        shutil.copy2(path, destination)
+        logging.error("حُفظت نسخة تشخيصية من الملف التالف: %s", os.path.basename(destination))
+        return destination
+    except OSError:
+        return None
+
+
 def _read_json(path, default, *, expected_type=None, fail_closed=False):
     path = os.fspath(path)
     if not os.path.exists(path):
@@ -311,9 +333,12 @@ def _read_json(path, default, *, expected_type=None, fail_closed=False):
             except Exception:
                 continue
         if fail_closed:
+            _preserve_corrupt_copy(path)
             raise RuntimeError(
-                f"تعذرت قراءة {os.path.basename(path)}؛ أُوقف التشغيل لحماية البيانات ومنع إعادة الرفع."
+                f"تعذرت قراءة {os.path.basename(path)}؛ أُوقف التشغيل لحماية البيانات ومنع إعادة الرفع. "
+                f"احتفظ بالنسخة المشخَّصة {os.path.basename(path)}.corrupt-* قبل أي إصلاح يدوي."
             ) from primary_error
+        _preserve_corrupt_copy(path)
         logging.warning("تعذرت قراءة %s؛ استُخدمت قيمة افتراضية.", os.path.basename(path))
         return default
 
@@ -536,6 +561,11 @@ def persist_upload_receipt(source_id, youtube_video_id, *, account="", url="", p
     video_id = extract_youtube_video_id(str(youtube_video_id or ""))
     if not source or video_id is None:
         raise ValueError("لا يمكن حفظ إيصال رفع بلا معرّف مصدر ومعرّف YouTube صالح.")
+    with _STATE_LOCK:
+        return _persist_upload_receipt_locked(source, video_id, path, account, url, page, title)
+
+
+def _persist_upload_receipt_locked(source, video_id, path, account, url, page, title):
     receipts = load_upload_receipts(path)
     existing = receipts.get(source)
     if existing:
@@ -570,6 +600,11 @@ def mark_upload_receipt_rejected(youtube_video_id, reason="", path=None):
     video_id = extract_youtube_video_id(str(youtube_video_id or ""))
     if video_id is None:
         raise ValueError("معرّف YouTube غير صالح لتعليم الإيصال كمرفوض.")
+    with _STATE_LOCK:
+        return _mark_upload_receipt_rejected_locked(video_id, reason, path)
+
+
+def _mark_upload_receipt_rejected_locked(video_id, reason, path):
     receipts = load_upload_receipts(path)
     changed = False
     for record in receipts.values():
@@ -589,13 +624,24 @@ def load_seen_ids():
 def save_seen_id(video_id):
     _append_id(SEEN_IDS_FILE, video_id)
 
+def _non_negative_int(value):
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def load_stats():
     stats = _read_json(STATS_FILE, {}, expected_type=dict)
-    stats.setdefault("total_uploaded", 0)
-    stats.setdefault("total_failed", 0)
-    stats.setdefault("total_downloaded", 0)
-    stats.setdefault("cycles", 0)
-    stats.setdefault("daily", {"date": "", "uploaded": 0})
+    for key in ("total_uploaded", "total_failed", "total_downloaded", "cycles"):
+        stats[key] = _non_negative_int(stats.get(key))
+    daily = stats.get("daily")
+    if not isinstance(daily, dict):
+        # setdefault لا يصلح النوع: {"daily": null} كان يُسقط أول رفع ناجح.
+        daily = {}
+    daily["date"] = str(daily.get("date") or "")[:20]
+    daily["uploaded"] = _non_negative_int(daily.get("uploaded"))
+    stats["daily"] = daily
     return stats
 
 def save_stats(stats):
@@ -633,7 +679,8 @@ def _clean_page_status_records(records):
 
 
 def load_page_status(path=PAGE_STATUS_FILE):
-    return _clean_page_status_records(_read_json(path, {}, expected_type=dict, fail_closed=True))
+    # ذاكرة عرض فقط: تلفها يكلف إعادة رسم، ولا يجوز أن يمنع بدء التطبيق.
+    return _clean_page_status_records(_read_json(path, {}, expected_type=dict))
 
 
 def save_page_status(records, path=PAGE_STATUS_FILE):
@@ -641,10 +688,13 @@ def save_page_status(records, path=PAGE_STATUS_FILE):
 
 def bump_daily_uploads(stats):
     today = pt_now().date().isoformat()
-    daily = stats.setdefault("daily", {"date": today, "uploaded": 0})
+    daily = stats.get("daily")
+    if not isinstance(daily, dict):
+        daily = {"date": today, "uploaded": 0}
     if daily.get("date") != today:
         daily["date"], daily["uploaded"] = today, 0
-    daily["uploaded"] += 1
+    daily["uploaded"] = _non_negative_int(daily.get("uploaded")) + 1
+    stats["daily"] = daily
 
 def load_state():
     return _read_json(STATE_FILE, {}, expected_type=dict, fail_closed=True)
@@ -662,7 +712,19 @@ def load_failed_queue():
         for item in items
     ):
         raise RuntimeError("failed_queue.json contains invalid entries; no upload was started.")
-    return deduplicate_queue_items(items)
+    normalized = []
+    for item in items:
+        entry = dict(item)
+        # "3" في attempts كان يجعل أول فشل يرفع TypeError فتعلق الدورة عليه.
+        if "attempts" in entry:
+            entry["attempts"] = _non_negative_int(entry.get("attempts"))
+        if "failed_at" in entry:
+            try:
+                entry["failed_at"] = float(entry["failed_at"])
+            except (TypeError, ValueError):
+                entry.pop("failed_at", None)
+        normalized.append(entry)
+    return deduplicate_queue_items(normalized)
 
 def save_failed_queue(items):
     if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
@@ -727,20 +789,61 @@ def prune_failed_queue(items, max_age_days=14):
         logging.info("أُسقطت %d عنصراً منتهياً بعد حفظها في الأرشيف", len(items) - len(kept))
     return kept
 
+def _bounded_int(value, default, low, high):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(low, min(number, high))
+
+
+def _normalize_page_entry(entry):
+    """مدخل صفحة صالح فقط؛ يُسقط ما لا يصلح بدل إسقاط التشغيل لاحقاً."""
+    if not isinstance(entry, dict):
+        return None
+    url = safe_facebook_page_url(str(entry.get("url") or "").strip())
+    if not url:
+        return None
+    return {
+        **entry,
+        "url": url,
+        "enabled": bool(entry.get("enabled", True)),
+        "name": str(entry.get("name") or "")[:200],
+        "scroll": _bounded_int(entry.get("scroll", 5), 5, 1, 100),
+        "limit": _bounded_int(entry.get("limit", 30), 30, 1, 100),
+    }
+
+
 def load_pages():
-    """الصفحات المخزنة؛ عند أول تشغيل تُحفظ الصفحات الافتراضية للمشروع."""
-    pages = _read_json(PAGES_FILE, None, expected_type=list, fail_closed=True)
-    if not pages:
-        pages = [dict(p) for p in DEFAULT_PAGES]
+    """الصفحات المخزنة؛ الافتراضيات تُزرع مرة واحدة عند غياب الملف فقط.
+
+    القائمة الفارغة قرار مشغّل (حذف كل الصفحات)؛ إحياء صفحات افتراضية مكانها
+    كان يعيد الكشط والرفع من صفحات حذفها صاحبها.
+    """
+    stored = _read_json(PAGES_FILE, None, expected_type=list, fail_closed=True)
+    if stored is None:
+        pages = [_normalize_page_entry(dict(item)) for item in DEFAULT_PAGES]
+        pages = [page for page in pages if page]
         try:
             save_pages(pages)
         except OSError:
             logging.exception("تعذر حفظ pages.json")
-    for p in pages:
-        p.setdefault("enabled", True)
-        p.setdefault("scroll", 5)
-        p.setdefault("limit", 30)
-        p.setdefault("name", "")
+        return pages
+
+    pages = []
+    dropped = 0
+    for item in stored:
+        page = _normalize_page_entry(item)
+        if page is None:
+            dropped += 1
+            continue
+        pages.append(page)
+    if dropped:
+        logging.warning("أُسقطت %d صفحة غير صالحة من pages.json", dropped)
+        try:
+            save_pages(pages)
+        except OSError:
+            logging.exception("تعذر إعادة كتابة pages.json بعد التنظيف")
     return pages
 
 def save_pages(pages):
@@ -1355,7 +1458,7 @@ def finalize_video(path, log_cb=None):
             redact_sensitive_text(error),
             "تحقق من صلاحيات المجلد ومساحة القرص ثم أعد المحاولة.",
         ) from error
-    cmd = [ffmpeg_bin, "-y", "-v", "error", "-i", source_path,
+    cmd = [ffmpeg_bin, "-y", "-nostdin", "-v", "error", "-i", source_path,
            "-c", "copy", "-movflags", "+faststart", "-map_metadata", "-1",
            "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", temporary_path]
     try:
@@ -2275,26 +2378,42 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
 # VIDEO PROCESSOR — تركيب الشعار بـ ffmpeg
 # ════════════════════════════════════════════════════
 def ffmpeg_available():
+    """يعيد True فقط إذا خرج ffmpeg بنجاح: نسخة معطوبة كانت تُعدّ «مثبتة»."""
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=10)
-        return True
-    except Exception:
+        result = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, timeout=10
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 def probe_video(path):
-    """يعيد (العرض، الارتفاع، المدة بالثواني) عبر ffprobe."""
+    """يعيد (العرض، الارتفاع، المدة بالثواني) عبر ffprobe.
+
+    المسار المطلق يمنع اسم ملف يبدأ بـ«-» من أن يُقرأ كخيار. وفشل ffprobe
+    يُسجَّل بنصه بدل أن يختفي كـ«ملف بلا أبعاد».
+    """
     try:
-        out = subprocess.run(
+        target = os.path.abspath(os.fspath(path))
+        result = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height:format=duration",
-             "-of", "json", path],
+             "-of", "json", target],
             capture_output=True, text=True, timeout=60,
-        ).stdout
-        data = json.loads(out)
+        )
+        if result.returncode != 0:
+            logging.warning(
+                "فشل ffprobe في قراءة %s (exit %s): %s",
+                os.path.basename(target), result.returncode,
+                (result.stderr or "")[-300:],
+            )
+            return 0, 0, 0.0
+        data = json.loads(result.stdout or "{}")
         stream = (data.get("streams") or [{}])[0]
         duration = float(data.get("format", {}).get("duration") or 0)
         return int(stream.get("width") or 0), int(stream.get("height") or 0), duration
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+        logging.warning("تعذر تشغيل ffprobe: %s", error)
         return 0, 0, 0.0
 
 LOGO_POSITIONS = {
@@ -2503,7 +2622,7 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
         with tempfile.TemporaryDirectory(prefix="fb-youtube-logo-") as temp_dir:
             badge_path = os.path.join(temp_dir, "logo_badge.png")
             badge.save(badge_path, format="PNG", optimize=True)
-            cmd = [ffmpeg_bin, "-y", "-i", input_path, "-i", badge_path]
+            cmd = [ffmpeg_bin, "-y", "-nostdin", "-i", input_path, "-i", badge_path]
             if secondary_badge is not None:
                 secondary_path = os.path.join(temp_dir, "logo_badge_secondary.png")
                 secondary_badge.save(secondary_path, format="PNG", optimize=True)
@@ -2857,7 +2976,7 @@ def _extract_thumbnail_candidates(video_path, duration, tmp_dir):
     start = duration * 0.10
     span = duration * 0.80
     pattern = os.path.join(tmp_dir, "frame%03d.png")
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+    cmd = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
            "-ss", f"{start:.2f}", "-i", video_path,
            "-frames:v", str(THUMB_CANDIDATE_COUNT),
            "-vf", (f"fps={THUMB_CANDIDATE_COUNT / span:.5f},"
@@ -2895,7 +3014,14 @@ def _pick_best_frame(video_path, duration, log_cb=None):
             return None
         fd, kept = tempfile.mkstemp(prefix="fb-youtube-frame-best-", suffix=".png")
         os.close(fd)
-        shutil.copyfile(best, kept)
+        try:
+            shutil.copyfile(best, kept)
+        except OSError:
+            try:
+                os.unlink(kept)
+            except OSError:
+                pass
+            raise
         return kept
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -2912,7 +3038,7 @@ def _enhance_frame(image):
 def _capture_fallback_frame(video_path, duration, out_path, log_cb=None):
     """المسار القديم: لقطة واحدة من ربع المدة؛ يعيد True عند النجاح."""
     at = min(max((duration or 0) * 0.25, 1.0), max((duration or 0) - 0.5, 0.0))
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}",
+    cmd = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}",
            "-i", video_path, "-frames:v", "1",
            "-vf", f"scale={THUMB_WIDTH}:{THUMB_HEIGHT}:force_original_aspect_ratio=increase,crop={THUMB_WIDTH}:{THUMB_HEIGHT}",
            out_path]
@@ -3122,37 +3248,50 @@ SHORTS_MIN_SOURCE = 95  # أقل مدة للمقطع الأصلي حتى يست�
 
 
 def _audio_rms_per_second(video_path):
-    """يعيد {ثانية: متوسط RMS (dB)} عبر ffmpeg astats. {} عند التعذر."""
+    """يعيد {ثانية: متوسط RMS} عبر ffmpeg astats.
+
+    ``None`` يعني أن ffmpeg نفسه فشل أو تجاوز المهلة — لا أن الفيديو صامت؛
+    الخلط بينهما كان يُسجّل «لا صوت» ويترك ميزة القص معطلة بلا سبب ظاهر.
+    """
     try:
-        cmd = ["ffmpeg", "-hide_banner", "-nostats", "-i", video_path, "-vn",
+        cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-i", video_path, "-vn",
                "-af", "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level",
                "-f", "null", "-"]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-        samples, current_t = [], None
-        for raw in (proc.stderr or "").splitlines() + (proc.stdout or "").splitlines():
-            line = raw.strip()
-            m = re.search(r"pts_time:([0-9.]+)", line)
-            if m:
-                current_t = float(m.group(1))
-                continue
-            if "RMS_level" in line and current_t is not None:
-                m2 = re.search(r"RMS_level=(-?[0-9.]+|-inf)", line)
-                if m2:
-                    try:
-                        val = float(m2.group(1))
-                    except ValueError:
-                        val = -91.0
-                    if val == float("-inf"):
-                        val = -91.0
-                    samples.append((int(current_t), val))
-                    current_t = None
-        buckets = {}
-        for sec, val in samples:
-            buckets.setdefault(sec, []).append(val)
-        return {sec: sum(vals) / len(vals) for sec, vals in buckets.items()}
-    except Exception as error:
-        logging.warning("تعذر تحليل الصوت للقص الذكي: %s", error)
-        return {}
+    except subprocess.TimeoutExpired:
+        logging.warning("انتهت مهلة تحليل الصوت (900 ثانية)؛ لم تُنشأ نسخة Shorts.")
+        return None
+    except OSError as error:
+        logging.warning("تعذر تشغيل ffmpeg لتحليل الصوت: %s", error)
+        return None
+    if proc.returncode != 0:
+        logging.warning(
+            "فشل ffmpeg في تحليل الصوت (exit %s): %s",
+            proc.returncode, (proc.stderr or "")[-300:],
+        )
+        return None
+    samples, current_t = [], None
+    for raw in (proc.stderr or "").splitlines() + (proc.stdout or "").splitlines():
+        line = raw.strip()
+        m = re.search(r"pts_time:([0-9.]+)", line)
+        if m:
+            current_t = float(m.group(1))
+            continue
+        if "RMS_level" in line and current_t is not None:
+            m2 = re.search(r"RMS_level=(-?[0-9.]+|-inf)", line)
+            if m2:
+                try:
+                    val = float(m2.group(1))
+                except ValueError:
+                    val = -91.0
+                if val == float("-inf"):
+                    val = -91.0
+                samples.append((int(current_t), val))
+                current_t = None
+    buckets = {}
+    for sec, val in samples:
+        buckets.setdefault(sec, []).append(val)
+    return {sec: sum(vals) / len(vals) for sec, vals in buckets.items()}
 
 
 def find_hot_segment(rms_by_second, clip_seconds=SHORTS_CLIP_SECONDS,
@@ -3366,6 +3505,10 @@ def next_publish_time(min_delay, max_delay):
     return pub
 
 def validate_media(path, log_cb=None, *, expected_duration=None):
+    # ffprobe يقرأ المسار الأخير كخيار إن بدأ بـ«-»؛ المسار المطلق يزيل الحالة.
+    if isinstance(path, (str, os.PathLike)):
+        path = os.path.abspath(os.fspath(path))
+
     def reject(code, cause, action):
         details = {"error": code, "cause": cause, "action": action}
         if log_cb:
@@ -5463,7 +5606,8 @@ class App:
             self.cutter_python_var.set(path)
 
     def _reconcile_unknown_upload(self):
-        if self._watching:
+        worker = getattr(self, "_thread", None)
+        if self._watching or (worker is not None and worker.is_alive()):
             messagebox.showwarning("العامل يعمل", "أوقف العامل قبل مطابقة نتيجة الرفع.", parent=self.root)
             return
         try:
@@ -6119,8 +6263,15 @@ class App:
             try:
                 os.startfile(HISTORY_FILE)  # Windows
             except AttributeError:
-                import subprocess
-                subprocess.Popen(["xdg-open", HISTORY_FILE])
+                try:
+                    subprocess.Popen(
+                        ["xdg-open", HISTORY_FILE],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    ).poll()
+                except OSError as error:
+                    messagebox.showerror("الأرشيف", f"تعذر فتح الملف: {error}", parent=self.root)
         else:
             messagebox.showinfo("الأرشيف", "لا يوجد أرشيف بعد — سيُنشأ مع أول عملية.")
 
@@ -8218,6 +8369,14 @@ class App:
                 record("media_validation_failed", reason)
                 return
             rms = _audio_rms_per_second(source)
+            if rms is None:
+                reason = (
+                    "تعذر تحليل صوت المصدر عبر ffmpeg؛ لم تُنشأ نسخة Shorts. "
+                    "راجع errors.log وFFmpeg ثم أعد المحاولة."
+                )
+                self._log(reason)
+                record("shorts_audio_analysis_failed", reason)
+                return
             segment = find_hot_segment(rms, source_duration=duration)
             if not segment:
                 self._log("تُخطى Shorts: لم يُكتشف مقطع صوتي صالح للقص؛ راجع الصوت أو ffmpeg.")
@@ -8565,8 +8724,9 @@ class App:
             self._log)
 
     def _handle_failure(self, failed_q, seen_ids, item, reason, settings, count_attempt=True, failure_details=None):
+        item["attempts"] = _non_negative_int(item.get("attempts"))
         if count_attempt:
-            item["attempts"] = item.get("attempts", 0) + 1
+            item["attempts"] += 1
         item["last_error"] = reason
         details = {}
         if failure_details is not None:
@@ -8575,7 +8735,7 @@ class App:
                 "failure_cause": str(failure_details.cause)[:500],
                 "next_action": str(failure_details.action)[:500],
             }
-        if item.get("attempts", 0) >= settings["max_attempts"]:
+        if _non_negative_int(item.get("attempts")) >= int(settings["max_attempts"]):
             save_seen_id(item["id"])
             seen_ids.add(item["id"])
             entry = {
@@ -8617,11 +8777,14 @@ class App:
         for it in remaining:
             if it["id"] in queued:
                 continue
-            failed_q.append({"id": it["id"], "url": it["url"],
-                             "page": it.get("page", ""), "attempts": it.get("attempts", 0),
-                             "title_hint": str(it.get("title_hint") or "")[:300],
-                             "last_error": "مؤجل",
-                             "failed_at": it.get("failed_at") or time.time()})
+            # نسخة كاملة: بناء مدخل من سبعة حقول كان يمحو upload_title وحقوق
+            # النشر و_UPLOAD_RESULT_UNKNOWN التي تعتمد عليها حماية التكرار.
+            entry = {key: value for key, value in it.items() if key != "retry"}
+            entry["title_hint"] = str(entry.get("title_hint") or "")[:300]
+            entry["failed_at"] = entry.get("failed_at") or time.time()
+            if not str(entry.get("last_error") or "").strip():
+                entry["last_error"] = "مؤجل"
+            failed_q.append(entry)
             queued.add(it["id"])
         if remaining:
             self._log(f"أُجّل {len(remaining)} {_arabic_plural(len(remaining), 'عنصر', 'عناصر', 'عنصراً')} للدورة القادمة.")
