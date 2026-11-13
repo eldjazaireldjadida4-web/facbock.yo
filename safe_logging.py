@@ -16,9 +16,12 @@ _SENSITIVE_KEYS = frozenset({
 })
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)([\"']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|client[_-]?secret|api[_-]?key|apikey|authorization|cookie|set-cookie|bot[_-]?token|secret|secret[_-]?key|private[_-]?key|proxy|auth|key|xs|c_user|sessionid|session[_-]?key|code)[\"']?\s*[:=]\s*)([\"']?)([^\s,;&\"']+)([\"']?)"
+    r"(?i)([\"']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|client[_-]?secret|api[_-]?key|apikey|authorization|cookie|set-cookie|bot[_-]?token|secret|secret[_-]?key|private[_-]?key|proxy|auth|key|xs|c_user|sessionid|session[_-]?key|code)[\"']?\s*[:=]\s*)([\"']?)"
+    # لا تبتلع كلمة المخطط (Basic/Bearer) وحدها فتترك الرمز مكشوفاً
+    r"(?!(?:basic|bearer|digest|apikey)\b)([^\s,;&\"']+)([\"']?)"
 )
 _BEARER_RE = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]+")
+_BASIC_RE = re.compile(r"(?i)(\bBasic\s+)[A-Za-z0-9+/=]{8,}")
 _TELEGRAM_BOT_RE = re.compile(r"(?i)(/bot)[A-Za-z0-9:_-]{20,}")
 _KEY_TOKEN_RE = re.compile(
     r"(?i)\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]+|gh[pousr]_[A-Za-z0-9_]{20,}|"
@@ -63,6 +66,7 @@ def redact_sensitive_text(value: object) -> str:
     text = _URL_RE.sub(_redact_url, text)
     text = _URL_USERINFO_RE.sub(r"\1[REDACTED]@", text)
     text = _BEARER_RE.sub(r"\1[REDACTED]", text)
+    text = _BASIC_RE.sub(r"\1[REDACTED]", text)
     text = _ASSIGNMENT_RE.sub(r"\1\2[REDACTED]\4", text)
     text = _KEY_TOKEN_RE.sub("[REDACTED]", text)
     text = _JWT_RE.sub("[REDACTED]", text)
@@ -91,15 +95,25 @@ class SensitiveDataFilter(logging.Filter):
 
 
 class SecureRotatingFileHandler(RotatingFileHandler):
+    """ملف سجل بصلاحية 0600 من لحظة الإنشاء، لا بعد فتحه.
+
+    ``open(path, "a")`` ينشئ الملف بـ0644 حتى ينفّذ chmod لاحقاً، وكل تدوير
+    يعيد الفجوة نفسها. هنا يُفتح بصلاحية مقيّدة منذ البداية، ويرفض الروابط
+    الرمزية بدل متابعتها.
+    """
+
     def _open(self):
-        stream = super()._open()
-        if os.name == "posix":
-            try:
-                os.chmod(self.baseFilename, 0o600)
-            except OSError:
-                stream.close()
-                raise
-        return stream
+        if os.name != "posix":
+            return super()._open()
+        flags = os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags |= os.O_APPEND if "a" in self.mode else os.O_TRUNC
+        descriptor = os.open(self.baseFilename, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+        except OSError:
+            os.close(descriptor)
+            raise
+        return os.fdopen(descriptor, self.mode, encoding=self.encoding)
 
 
 def secure_log_handler(handler: logging.Handler) -> logging.Handler:

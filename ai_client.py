@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -34,15 +33,25 @@ def _iso_in_past(iso_text):
     if not iso_text:
         return True
     try:
-        return datetime.fromisoformat(iso_text) <= datetime.now()
-    except ValueError:
+        moment = datetime.fromisoformat(str(iso_text))
+    except (TypeError, ValueError):
         return True
+    if moment.tzinfo is not None:
+        moment = moment.astimezone().replace(tzinfo=None)
+    return moment <= datetime.now()
 
 def ai_available_key(keys):
-    """أول مفتاح غير مستنفد؛ يعيد (الفهرس، المفتاح) أو (None, None)."""
+    """أول مفتاح غير مستنفد؛ يعيد (الفهرس، المفتاح) أو (None, None).
+
+    ملف المفاتيح قد يكون قديماً أو محرَّراً يدوياً (قائمة نصوص بدل كائنات)،
+    لذلك تُتجاهل المدخلات غير الصالحة بدل إسقاط دورة الرفع كلها.
+    """
     for i, entry in enumerate(keys):
-        if entry.get("key") and _iso_in_past(entry.get("exhausted_until", "")):
-            return i, entry["key"]
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        if isinstance(key, str) and key.strip() and _iso_in_past(entry.get("exhausted_until", "")):
+            return i, key
     return None, None
 
 def ai_mark_exhausted(keys, index, reason, keys_path, write_json, harden=None):
@@ -94,7 +103,12 @@ def gemini_generate(prompt, model, keys_path, read_json, write_json,
                 body = e.read().decode("utf-8", "ignore")[:300]
             except Exception:
                 pass
-            invalid = e.code in (400, 401) or (e.code == 403 and "API_KEY_INVALID" in body)
+            # 400 قد يعني طلباً غير صالح (نموذج متقاعد، حدّ رموز) لا مفتاحاً
+            # خاطئاً؛ اعتباره مفتاحاً تالفاً يعطّل مفتاحاً سليماً 24 ساعة.
+            lowered = body.lower()
+            key_problem = "api_key_invalid" in lowered or "api key not valid" in lowered
+            invalid = e.code == 401 or (e.code == 403 and "API_KEY_INVALID" in body) \
+                or (e.code == 400 and (not body.strip() or key_problem))
             if invalid:
                 ai_mark_exhausted(keys, idx, f"مفتاح غير صالح (HTTP {e.code})",
                                   keys_path, write_json, harden=harden)
@@ -107,12 +121,13 @@ def gemini_generate(prompt, model, keys_path, read_json, write_json,
                 if log_cb:
                     log_cb(f"نفدت حصة مفتاح Gemini #{idx+1} — الانتقال للتالي…")
                 continue
+            # خطأ طلب/خادم غير مرتبط بالمفتاح: تبريد قصير بدل تعطيل يوم كامل.
+            cooldown = (datetime.now() + timedelta(minutes=10)).isoformat(timespec="seconds")
             keys[idx]["last_error"] = f"HTTP {e.code}: {body[:120]}"
+            keys[idx]["exhausted_until"] = cooldown
             save_ai_keys(keys, keys_path, write_json, harden=harden)
             if log_cb:
                 log_cb(f"خطأ Gemini HTTP {e.code} للمفتاح #{idx+1} — تجربة التالي…")
-            ai_mark_exhausted(keys, idx, f"HTTP {e.code}",
-                              keys_path, write_json, harden=harden)
         except Exception as e:
             logging.warning("خطأ شبكة مع مفتاح Gemini #%s: %s", idx + 1, e)
             keys[idx]["last_error"] = str(e)[:200]
@@ -124,16 +139,22 @@ def gemini_generate(prompt, model, keys_path, read_json, write_json,
             save_ai_keys(keys, keys_path, write_json, harden=harden)
 
 def _extract_json(text):
-    """يستخرج أول كائن JSON من رد النموذج حتى لو التفّ بعلامات markdown."""
+    r"""يستخرج أول كائن JSON من رد النموذج حتى لو التفّ بعلامات markdown.
+
+    مطابقة ``\{.*\}`` الجشعة تبتلع أي قوس لاحق (مثال توضيحي أو وصف فيه «}»)
+    فتفسد الكائن الصالح؛ هنا نفكّ أول كائن فقط ونتجاهل ما بعده.
+    """
     if not text:
         return None
-    m = re.search(r'\{.*\}', text, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
+    start = text.find("{")
+    while start != -1:
+        try:
+            value, _end = json.JSONDecoder().raw_decode(text[start:])
+        except json.JSONDecodeError:
+            start = text.find("{", start + 1)
+            continue
+        return value if isinstance(value, dict) else None
+    return None
 
 def ai_ping_key(key, model, timeout=30):
     """اختبار سريع لمفتاح واحد. يعيد (نجاح؟، رسالة)."""

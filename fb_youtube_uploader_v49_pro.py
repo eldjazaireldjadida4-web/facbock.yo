@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.48.11"
+__version__ = "4.49.0"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -200,6 +200,11 @@ MAX_RETRIES         = 3
 RETRY_DELAY         = 8
 # عدد مرات استئناف الرفع داخل نفس الجلسة عند انقطاع مؤقت (لا يُعيد الملف من الصفر).
 MAX_CHUNK_RETRIES   = 5
+# نبضات بلا تقدّم فعلي في جلسة رفع مستأنفة قبل إعلان النتيجة غير مؤكدة.
+MAX_IDLE_CHUNKS     = 3
+# مهلة إغلاق الواجهة قبل التخلي عن عامل عالق (OAuth/Selenium).
+CLOSE_WAIT_SECONDS  = 5
+IDLE_CHUNK_WAIT_SECONDS = 2
 
 # الصفحات المحفوظة في المشروع — تُكتب تلقائياً في pages.json عند أول تشغيل
 DEFAULT_PAGES = [
@@ -536,7 +541,12 @@ def persist_upload_receipt(source_id, youtube_video_id, *, account="", url="", p
     if existing:
         if existing.get("youtube_id") == video_id:
             return existing, False
-        raise RuntimeError("يوجد إيصال مختلف للمصدر نفسه؛ لا تُعد الرفع قبل المطابقة اليدوية.")
+        if existing.get("status") == "rejected":
+            # فيديو رفضه YouTube بعد القبول: إعادة المحاولة اليدوية بعد إصلاح
+            # السبب يجب ألا تصطدم بإيصال ميت.
+            receipts.pop(source, None)
+        else:
+            raise RuntimeError("يوجد إيصال مختلف للمصدر نفسه؛ لا تُعد الرفع قبل المطابقة اليدوية.")
     if any(record.get("youtube_id") == video_id for record in receipts.values()):
         raise RuntimeError("معرّف YouTube مرتبط بمصدر آخر؛ أُوقف حفظ الإيصال منعاً للتكرار.")
     record = {
@@ -552,6 +562,25 @@ def persist_upload_receipt(source_id, youtube_video_id, *, account="", url="", p
     receipts[source] = record
     save_upload_receipts(receipts, path)
     return record, True
+
+
+def mark_upload_receipt_rejected(youtube_video_id, reason="", path=None):
+    """يعلّم إيصالاً «مرفوضاً» بعد أن يقبل YouTube الطلب ثم يرفض المعالجة."""
+    path = UPLOAD_RECEIPTS_FILE if path is None else path
+    video_id = extract_youtube_video_id(str(youtube_video_id or ""))
+    if video_id is None:
+        raise ValueError("معرّف YouTube غير صالح لتعليم الإيصال كمرفوض.")
+    receipts = load_upload_receipts(path)
+    changed = False
+    for record in receipts.values():
+        if record.get("youtube_id") == video_id:
+            record["status"] = "rejected"
+            record["rejected_reason"] = str(reason or "")[:200]
+            record["rejected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            changed = True
+    if changed:
+        save_upload_receipts(receipts, path)
+    return changed
 
 def load_seen_ids():
     """معرّفات استُنفدت محاولاتها — لا تُعاد معالجتها أبداً."""
@@ -1246,7 +1275,12 @@ def verify_upload(youtube, video_id, requested_privacy, sched_time=None, log_cb=
         if log_cb:
             log_cb("لم يظهر الفيديو بعد الرفع؛ قد يكون قيد المعالجة.")
         return None
-    status = items[0].get("status") or {}
+    item = items[0] if isinstance(items[0], dict) else {}
+    status = item.get("status") or {}
+    processing = item.get("processingDetails") or {}
+    processing_status = str(processing.get("processingStatus") or "")
+    if processing_status:
+        status = {**status, "processingStatus": processing_status}
     actual = status.get("privacyStatus")
     if sched_time:
         if status.get("publishAt"):
@@ -1263,6 +1297,25 @@ def verify_upload(youtube, video_id, requested_privacy, sched_time=None, log_cb=
     elif actual == requested_privacy and log_cb:
         log_cb(f"حالة الفيديو بعد الرفع: {actual}")
     return status
+
+
+def upload_status_failure(status):
+    """سبب نصي إذا أكّد YouTube أن الفيديو مرفوض أو فشلت معالجته.
+
+    ``verify_upload`` كانت تفحص الخصوصية فقط: فيديو بـ``uploadStatus=rejected``
+    كان يُسجَّل «مرفوعاً» ويُحذف إيصال الإعادة، فلا يُعاد ولا يظهر للمشغّل سبب.
+    """
+    if not isinstance(status, dict):
+        return ""
+    upload_status = str(status.get("uploadStatus") or "")
+    if upload_status in {"rejected", "failed", "deleted"}:
+        return f"uploadStatus={upload_status}"
+    if status.get("processingStatus") == "failed":
+        return "processingStatus=failed"
+    reason = status.get("failureReason") or status.get("rejectionReason")
+    if reason:
+        return f"reason={reason}"
+    return ""
 
 
 def finalize_video(path, log_cb=None):
@@ -1856,17 +1909,27 @@ def _promote_downloaded_file(file_path, attempt_dir, output_dir, source_id):
         destination = os.path.join(output_dir, f"{base}-{os.urandom(6).hex()}{extension}")
     try:
         os.link(source, destination)
-        os.unlink(source)
     except OSError:
         if os.path.lexists(destination):
             raise
         os.rename(source, destination)
-    if os.name == "posix" and not restrict_file_permissions(destination):
+    else:
         try:
-            os.unlink(destination)
-        except OSError:
-            pass
-        raise OSError("تعذر تقييد أذونات ملف الفيديو المحلي.")
+            os.unlink(source)
+        except OSError as error:
+            # النسخة الثانية ما زالت في مجلد المحاولة وسيحذفها تنظيفه؛ لا
+            # نُسقط تنزيلاً مكتملاً بسبب قفل مؤقت من مضاد الفيروسات.
+            logging.warning(
+                "تعذر حذف نسخة المحاولة بعد ترقية التنزيل؛ سيتولى تنظيف المجلد حذفها: %s",
+                redact_sensitive_text(str(error)),
+            )
+    if os.name == "posix" and not restrict_file_permissions(destination):
+        # أنظمة مثل SMB وexFAT ترفض chmod؛ كان الفشل يحذف ملفاً مكتملاً
+        # ويجعل كل تنزيل إلى ذلك المجلد يفشل دائماً.
+        logging.warning(
+            "تعذر تقييد أذونات ملف الفيديو المحلي %s؛ يُتجاهل على أنظمة الملفات التي لا تدعم chmod.",
+            os.path.basename(destination),
+        )
     return destination
 
 
@@ -2179,13 +2242,14 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
                 RuntimeError(logger.last_error)
             )
             if transient and attempt < attempts:
+                delay = _backoff_seconds(attempt)
                 if log_cb:
-                    log_cb(f"انقطع الاتصال أثناء الاستخراج؛ المحاولة {attempt}/{attempts} بعد {RETRY_DELAY} ثوانٍ.")
+                    log_cb(f"انقطع الاتصال أثناء الاستخراج؛ المحاولة {attempt}/{attempts} بعد {int(delay)} ثانية.")
                 if stop_event is not None:
-                    if stop_event.wait(RETRY_DELAY):
+                    if stop_event.wait(delay):
                         raise StopRequested()
                 else:
-                    time.sleep(RETRY_DELAY)
+                    time.sleep(delay)
                 continue
             if transient:
                 failure = PipelineFailure(
@@ -3319,7 +3383,7 @@ def validate_media(path, log_cb=None, *, expected_duration=None):
     if file_size <= 0:
         return reject("empty-file", "ملف التنزيل فارغ.",
                       "أعد تنزيل المصدر قبل محاولة الرفع.")
-    if file_size > 256 * 1024**3:
+    if file_size > 256_000_000_000:
         return reject("file-too-large", "تجاوز الملف الحد الأقصى المسموح به لرفع YouTube.",
                       "استخدم ملفاً أصغر من 256 GB.")
     if os.path.basename(path).lower().endswith((".part", ".ytdl", ".partial", ".tmp")):
@@ -3583,6 +3647,10 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 if log_cb:
                     log_cb("نفدت حصة مشروع YouTube API.")
                 return "QUOTA_ERROR"
+            if kind == "session_expired":
+                if log_cb:
+                    log_cb("رفض YouTube إنشاء جلسة الرفع (404/410)؛ لم يبدأ الرفع.")
+                return UPLOAD_NOT_STARTED
             if kind in {"auth", "fatal"}:
                 if log_cb:
                     log_cb(f"رفض YouTube طلب الرفع: {str(error)[:200]}")
@@ -3625,6 +3693,7 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
         chunk_failures = 0
         idle_chunks = 0
         last_pct = 0
+        last_progress = 0
         upload_request_started = False
         while response is None:
             if stop_event is not None and stop_event.is_set():
@@ -3647,6 +3716,10 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                     if log_cb:
                         log_cb("نفدت حصة مشروع YouTube API.")
                     return "QUOTA_ERROR"
+                if kind == "session_expired":
+                    if log_cb:
+                        log_cb("انتهت جلسة الرفع المستأنفة (404/410)؛ تعذّر الاستئناف بأمان. تحقق من YouTube Studio قبل أي إعادة.")
+                    return UPLOAD_RESULT_UNKNOWN
                 if kind in {"auth", "fatal"}:
                     if log_cb:
                         log_cb(f"رفض YouTube طلب الرفع: {str(error)[:200]}")
@@ -3679,18 +3752,37 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 if log_cb:
                     log_cb("توقف الرفع بعد بدء جلسة YouTube؛ النتيجة غير مؤكدة، تحقق من YouTube Studio قبل إعادة المحاولة.")
                 return UPLOAD_RESULT_UNKNOWN
-            if status:
-                idle_chunks = 0
+            if status is not None:
+                try:
+                    progress_bytes = int(getattr(status, "resumable_progress", 0) or 0)
+                except (TypeError, ValueError):
+                    progress_bytes = 0
+                if progress_bytes <= last_progress:
+                    # 308 متكرر دون تقدّم فعلي: next_chunk لا يعيد response في
+                    # هذه الحالة، فكانت الحلقة تدور بلا حدّ لأن العدّاد لا يزيد.
+                    idle_chunks += 1
+                    if idle_chunks > MAX_IDLE_CHUNKS:
+                        if log_cb:
+                            log_cb("لم تتقدم جلسة الرفع؛ النتيجة غير مؤكدة وتم إيقافها لمنع التكرار. تحقق من YouTube Studio.")
+                        return UPLOAD_RESULT_UNKNOWN
+                    if wait_or_stop(IDLE_CHUNK_WAIT_SECONDS):
+                        return UPLOAD_RESULT_UNKNOWN
+                else:
+                    last_progress = progress_bytes
+                    idle_chunks = 0
+                    # تقدّم فعلي يعني أن الأخطاء السابقة كانت عابرة؛ تراكمها
+                    # عبر رفع يستغرق ساعات كان يجهض جلسة سليمة.
+                    chunk_failures = 0
                 last_pct = int(status.progress() * 100)
                 if log_cb:
                     log_cb(f"جاري الرفع: {last_pct}%", replace_last=True)
             elif response is None:
                 idle_chunks += 1
-                if idle_chunks > 3:
+                if idle_chunks > MAX_IDLE_CHUNKS:
                     if log_cb:
                         log_cb("لم تتقدم جلسة الرفع؛ النتيجة غير مؤكدة وتم إيقافها لمنع التكرار. تحقق من YouTube Studio.")
                     return UPLOAD_RESULT_UNKNOWN
-                if wait_or_stop(1):
+                if wait_or_stop(IDLE_CHUNK_WAIT_SECONDS):
                     return UPLOAD_RESULT_UNKNOWN
 
         raw_video_id = response.get("id") if isinstance(response, dict) else None
@@ -3709,7 +3801,30 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 raise RuntimeError(
                     f"YouTube confirmed upload {video_id}, but local receipt persistence failed."
                 ) from error
-
+        verification = None
+        try:
+            verification = verify_upload(
+                youtube, video_id, body["status"]["privacyStatus"], sched_time, log_cb
+            )
+        except Exception as error:
+            logging.exception("رُفع الفيديو لكن تعذّر التحقق من حالته")
+            if log_cb:
+                log_cb(f"رُفع الفيديو؛ تعذّر التحقق من الحالة: {error}")
+        rejection = upload_status_failure(verification)
+        if rejection:
+            # الإيصال حُفظ أولاً عمداً (حماية من التكرار). لكن قبول الطلب ثم
+            # رفض المعالجة يعني أن الفيديو غير منشور: يُعلَّم الإيصال مرفوضاً
+            # حتى لا يعدّه التشغيل التالي «مرفوعاً»، ولا يُحتسب نجاحاً.
+            try:
+                mark_upload_receipt_rejected(video_id, rejection)
+            except Exception:
+                logging.exception("تعذر تعليم إيصال الرفع كمرفوض")
+            if log_cb:
+                log_cb(
+                    f"YouTube رفض الفيديو بعد قبول الطلب ({rejection})؛ لن يُحتسب نجاحاً. "
+                    "راجع إشعارات YouTube Studio ثم حرّر العنصر يدوياً بعد إصلاح السبب."
+                )
+            return UPLOAD_REJECTED
         if log_cb:
             log_cb(f"تم الرفع بنجاح. ID: {video_id}")
         if playlist_id:
@@ -3719,12 +3834,6 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                 logging.exception("رُفع الفيديو لكن تعذّرت إضافة قائمة التشغيل")
                 if log_cb:
                     log_cb(f"رُفع الفيديو؛ تعذّرت إضافة قائمة التشغيل: {error}")
-        try:
-            verify_upload(youtube, video_id, body["status"]["privacyStatus"], sched_time, log_cb)
-        except Exception as error:
-            logging.exception("رُفع الفيديو لكن تعذّر التحقق من حالته")
-            if log_cb:
-                log_cb(f"رُفع الفيديو؛ تعذّر التحقق من الحالة: {error}")
         return video_id
     return UPLOAD_NOT_STARTED
 
@@ -4268,7 +4377,14 @@ class App:
         if not request["ready"].is_set():
             request["decision"].update({"action": "cancel"})
             request["ready"].set()
+        job = request.get("preview_job")
         window = request.get("window")
+        if job is not None and job[0] is not None and window is not None:
+            try:
+                window.after_cancel(job[0])
+            except tk.TclError:
+                pass
+            job[0] = None
         if window is not None:
             try:
                 if window.winfo_exists():
@@ -4284,15 +4400,28 @@ class App:
         self._stop.set()
         self._cancel_pending_review()
         self._save_ui_settings()
+        self._close_deadline = time.monotonic() + CLOSE_WAIT_SECONDS
         self._finish_close_when_idle()
 
     def _finish_close_when_idle(self):
+        """ينتظر العامل مهلة قصيرة ثم يغلق؛ لا انتظار أبدي.
+
+        العامل غير daemon وقد يعلق داخل OAuth تفاعلي أو Selenium بلا
+        stop_event؛ بلا مهلة كان الإغلاق ينتظر إلى الأبد والنافذة تبقى
+        «جارٍ الإنهاء». خيط فحص Facebook daemon أصلاً فلا يُنتظر.
+        """
         worker = self._thread
-        probe = getattr(self, "_facebook_probe_thread", None)
-        if (worker is not None and worker.is_alive()) or (probe is not None and probe.is_alive()):
-            self.status_lbl.config(text="جارٍ إنهاء العمل أو فحص Facebook بأمان…", fg=WARN)
+        busy = worker is not None and worker.is_alive()
+        deadline = getattr(self, "_close_deadline", None)
+        if deadline is None:
+            deadline = time.monotonic() + CLOSE_WAIT_SECONDS
+            self._close_deadline = deadline
+        if busy and time.monotonic() < deadline:
+            self.status_lbl.config(text="جارٍ إنهاء العمل بأمان…", fg=WARN)
             self.root.after(100, self._finish_close_when_idle)
             return
+        if busy:
+            logging.warning("إغلاق الواجهة بعد مهلة الانتظار؛ العامل ما زال يعمل وسيُنهى مع العملية.")
         self.root.destroy()
 
     # ─────────── بناء الواجهة ───────────
@@ -4673,7 +4802,8 @@ class App:
         Btn(r2, "إضافة", self._ai_key_add, ACCENT).pack(side="left", padx=8)
         Btn(r2, "حذف", self._ai_key_del, ERR).pack(side="left")
         Btn(r2, "تفعيل الكل الآن", self._ai_keys_reset, "#6a5acd").pack(side="left", padx=8)
-        Btn(r2, "اختبار المفاتيح", self._ai_keys_test, "#00695c").pack(side="right")
+        self.ai_test_btn = Btn(r2, "اختبار المفاتيح", self._ai_keys_test, "#00695c")
+        self.ai_test_btn.pack(side="right")
         self._reload_ai_tree()
 
     def _reload_ai_tree(self, statuses=None):
@@ -4723,23 +4853,38 @@ class App:
         self._log("أُعيد تفعيل كل المفاتيح")
 
     def _ai_keys_test(self):
+        if getattr(self, "_ai_test_running", False):
+            return
         keys = load_ai_keys()
         if not keys:
             messagebox.showinfo("لا مفاتيح", "أضف مفتاحاً أولاً")
             return
         model = self.ai_model_var.get()
+        self._ai_test_running = True
+        if getattr(self, "ai_test_btn", None) is not None:
+            self.ai_test_btn.config(state="disabled")
+
         def job():
-            self._log(f"اختبار {len(keys)} مفتاح Gemini…")
             statuses = {}
-            for i, entry in enumerate(keys):
-                ok, msg = ai_ping_key(entry.get("key", ""), model)
-                statuses[i] = msg
-                if not ok and ("429" in msg or "403" in msg):
-                    fresh = load_ai_keys()          # يحدّث الملف مباشرة دون فقد تعديلات
-                    if i < len(fresh):
-                        ai_mark_exhausted(fresh, i, msg)
-                self._log(f"   مفتاح #{i+1}: {msg}")
-            self.root.after(0, lambda: self._reload_ai_tree(statuses))
+            error_text = ""
+            try:
+                self._log(f"اختبار {len(keys)} مفتاح Gemini…")
+                for i, entry in enumerate(keys):
+                    ok, msg = ai_ping_key(entry.get("key", ""), model)
+                    statuses[i] = msg
+                    if not ok and ("429" in msg or "403" in msg):
+                        fresh = load_ai_keys()          # يحدّث الملف مباشرة دون فقد تعديلات
+                        if i < len(fresh):
+                            ai_mark_exhausted(fresh, i, msg)
+                    self._log(f"   مفتاح #{i+1}: {msg}")
+            except Exception as error:
+                logging.exception("توقف اختبار مفاتيح Gemini")
+                error_text = str(error)
+            finally:
+                # after() من خيط غير رئيسي غير مدعوم ويمكن أن يرفع
+                # RuntimeError فيموت الاختبار صامتاً؛ الطابور هو المسار الآمن.
+                self._uiq.put(("ai_test_finished", {"statuses": statuses, "error": error_text}))
+
         threading.Thread(target=job, daemon=True).start()
 
     # ─────────── تبويب الخيارات ───────────
@@ -5510,6 +5655,11 @@ class App:
             self._log(f"تعذر تحرير العناصر المعلّقة: {error}")
 
     def _update_ytdlp(self):
+        if getattr(self, "_ytdlp_update_running", False):
+            self._log("تحديث yt-dlp يعمل بالفعل؛ انتظر انتهاءه.")
+            return
+        self._ytdlp_update_running = True
+
         def job():
             self._log("جاري تحديث yt-dlp…")
             try:
@@ -5520,6 +5670,8 @@ class App:
                 self._log(("تم: " if proc.returncode == 0 else "خطأ: ") + (tail[0] if tail else "اكتمل التحديث"))
             except Exception as error:
                 self._log(f"فشل التحديث: {error}")
+            finally:
+                self._ytdlp_update_running = False
         threading.Thread(target=job, daemon=True).start()
 
     # ─────────── تبويب الاستوديو (العنوان + الشعار) ───────────
@@ -6089,6 +6241,7 @@ class App:
 
         thumbnail_base_path = payload.get("thumbnail_base_path")
         preview_job = [None]
+        request["preview_job"] = preview_job
         preview_status = tk.Label(preview_frame, text="تتحدث المعاينة مع تعديل العنوان.",
                                   bg=CARD, fg=TXT2, font=FSM)
         preview_status.pack(anchor="e", pady=(2, 0))
@@ -6215,6 +6368,15 @@ class App:
         def finish(action):
             if request["ready"].is_set():
                 return
+            # مؤقت المعاينة مسجّل على المفسّر لا على النافذة: destroy لا
+            # يلغيه، فيعمل لاحقاً على عناصر ميتة ويعيد إنشاء ملف المعاينة
+            # بعد أن حذفه العامل.
+            if preview_job[0] is not None:
+                try:
+                    window.after_cancel(preview_job[0])
+                except tk.TclError:
+                    pass
+                preview_job[0] = None
             decision = {"action": action}
             if action == "approve":
                 title = title_var.get().strip()
@@ -6297,7 +6459,24 @@ class App:
 
     # ─────────── مضخة رسائل الواجهة ───────────
     def _poll(self):
-        """ينفذ كل تحديثات Tkinter من الخيط الرئيسي فقط."""
+        """ينفذ كل تحديثات Tkinter من الخيط الرئيسي فقط.
+
+        استثناء واحد داخل معالجة حدث كان يقتل سلسلة after نهائياً: تتجمد
+        الواجهة، ولا يُعالج حدث "finished"، ويبقى العامل ينتظر موافقة مراجعة
+        لن تظهر. الآن تُعزل الأخطاء وتُعاد الجدولة دائماً.
+        """
+        try:
+            self._drain_queues()
+        except Exception:
+            logging.exception("تعذر تحديث الواجهة؛ سأعيد المحاولة في النبضة التالية")
+        if self._closing:
+            return
+        try:
+            self.root.after(100, self._poll)
+        except tk.TclError:
+            pass
+
+    def _drain_queues(self):
         while not self._logq.empty():
             msg, repl = self._logq.get_nowait()
             self.log_txt.configure(state="normal")
@@ -6321,79 +6500,94 @@ class App:
 
         while not self._uiq.empty():
             event, payload = self._uiq.get_nowait()
-            if event == "review_request":
-                if self._stop.is_set() or payload["ready"].is_set():
+            try:
+                self._handle_ui_event(event, payload)
+            except Exception:
+                logging.exception("تعذر معالجة حدث واجهة: %s", event)
+
+    def _handle_ui_event(self, event, payload):
+        """يعالج حدثاً واحداً؛ منفصل ليبقى عزل الأخطاء واضحاً في _drain_queues."""
+        if event == "review_request":
+            if self._stop.is_set() or payload["ready"].is_set():
+                payload["decision"].update({"action": "cancel"})
+                payload["ready"].set()
+            else:
+                try:
+                    self._show_upload_review(payload)
+                except Exception as error:
+                    logging.exception("تعذر فتح نافذة مراجعة الفيديو")
                     payload["decision"].update({"action": "cancel"})
                     payload["ready"].set()
-                else:
-                    try:
-                        self._show_upload_review(payload)
-                    except Exception as error:
-                        logging.exception("تعذر فتح نافذة مراجعة الفيديو")
-                        payload["decision"].update({"action": "cancel"})
-                        payload["ready"].set()
-                        self._log(f"تعذر فتح نافذة المراجعة؛ أُعيد الفيديو إلى قائمة الانتظار: {error}")
-            elif event == "progress":
-                self.prog_var.set(payload)
-                self.pct_lbl.config(text=f"{payload}%")
-            elif event == "countdown":
-                self.countdown_var.set(payload)
-            elif event == "facebook_network_test_finished":
-                self._facebook_network_test_running = False
-                self.facebook_network_test_button.config(state="normal")
-                route = payload.get("route")
-                if route == "proxy":
-                    message = "منفذ الوكيل يستجيب؛ اختبر صفحة المصدر للتأكد من أن Facebook متاح عبره."
-                    color = WARN
-                elif route:
-                    route_label = {"ipv4": "IPv4", "ipv6": "IPv6", "direct": "المسار المباشر"}.get(route, route)
-                    message = f"اتصال TCP بفيسبوك متاح عبر {route_label}؛ لم تُختبر صلاحية تسجيل الدخول أو الصفحة."
-                    color = SUCCESS
-                else:
-                    timeout = payload.get("timeout", DEFAULT_NETWORK_PREFLIGHT_TIMEOUT)
-                    message = (
-                        f"تعذر اتصال TCP عبر {timeout} ثانية لكل مسار. افحص إن كان الإنترنت يعمل "
-                        "في المتصفح أو يحجب جدار حماية Windows/مزود الخدمة Facebook."
-                    )
-                    color = ERR
-                self.facebook_network_status_var.set(message)
-                self.facebook_network_status_label.config(fg=color)
-                self._log(message)
-            elif event == "facebook_probe_result":
-                self._finish_facebook_page_probe(payload)
-            elif event == "preflight_result":
-                self._preflight_running = False
-                self._preflight_btn.config(state="normal")
-                return_code, output = payload
-                status = "فحص الجاهزية اكتمل" if return_code == 0 else "فحص الجاهزية يحتاج مراجعة"
-                color = SUCCESS if return_code == 0 else WARN
-                self.status_lbl.config(text=status, fg=color)
-                self._show_readiness_report(return_code, output)
-            elif event == "diagnostic_report_finished":
-                self._diagnostic_report_running = False
-                self.diagnostic_report_button.config(state="normal")
-                if payload.get("path"):
-                    self._log(
-                        f"حُفظ التقرير التشخيصي محلياً في {payload['path']}. "
-                        "راجعه قبل مشاركته؛ لا يحتوي على قيم كوكيز أو رموز OAuth."
-                    )
-                else:
-                    self._log(
-                        "تعذر إنشاء التقرير التشخيصي؛ راجع errors.log محلياً "
-                        f"(نوع الخطأ: {payload.get('error_type', 'غير معروف')})."
-                    )
-            elif event == "page_status":
-                self.page_status[payload["url"]] = payload
-                try:
-                    save_page_status(self.page_status)
-                except OSError:
-                    logging.exception("تعذر حفظ آخر حالة للصفحات")
-                self._refresh_watch_tree()
-            elif event == "quota":
-                self.quota_var.set(f"طلبات الرفع اليوم: {payload['used']} / {payload['limit']}")
-            elif event == "finished":
-                self._finish_worker(payload)
-        self.root.after(100, self._poll)
+                    self._log(f"تعذر فتح نافذة المراجعة؛ أُعيد الفيديو إلى قائمة الانتظار: {error}")
+        elif event == "progress":
+            self.prog_var.set(payload)
+            self.pct_lbl.config(text=f"{payload}%")
+        elif event == "countdown":
+            self.countdown_var.set(payload)
+        elif event == "facebook_network_test_finished":
+            self._facebook_network_test_running = False
+            self.facebook_network_test_button.config(state="normal")
+            route = payload.get("route")
+            if route == "proxy":
+                message = "منفذ الوكيل يستجيب؛ اختبر صفحة المصدر للتأكد من أن Facebook متاح عبره."
+                color = WARN
+            elif route:
+                route_label = {"ipv4": "IPv4", "ipv6": "IPv6", "direct": "المسار المباشر"}.get(route, route)
+                message = f"اتصال TCP بفيسبوك متاح عبر {route_label}؛ لم تُختبر صلاحية تسجيل الدخول أو الصفحة."
+                color = SUCCESS
+            else:
+                timeout = payload.get("timeout", DEFAULT_NETWORK_PREFLIGHT_TIMEOUT)
+                message = (
+                    f"تعذر اتصال TCP عبر {timeout} ثانية لكل مسار. افحص إن كان الإنترنت يعمل "
+                    "في المتصفح أو يحجب جدار حماية Windows/مزود الخدمة Facebook."
+                )
+                color = ERR
+            self.facebook_network_status_var.set(message)
+            self.facebook_network_status_label.config(fg=color)
+            self._log(message)
+        elif event == "facebook_probe_result":
+            self._finish_facebook_page_probe(payload)
+        elif event == "preflight_result":
+            self._preflight_running = False
+            self._preflight_btn.config(state="normal")
+            return_code, output = payload
+            status = "فحص الجاهزية اكتمل" if return_code == 0 else "فحص الجاهزية يحتاج مراجعة"
+            color = SUCCESS if return_code == 0 else WARN
+            self.status_lbl.config(text=status, fg=color)
+            self._show_readiness_report(return_code, output)
+        elif event == "diagnostic_report_finished":
+            self._diagnostic_report_running = False
+            self.diagnostic_report_button.config(state="normal")
+            if payload.get("path"):
+                self._log(
+                    f"حُفظ التقرير التشخيصي محلياً في {payload['path']}. "
+                    "راجعه قبل مشاركته؛ لا يحتوي على قيم كوكيز أو رموز OAuth."
+                )
+            else:
+                self._log(
+                    "تعذر إنشاء التقرير التشخيصي؛ راجع errors.log محلياً "
+                    f"(نوع الخطأ: {payload.get('error_type', 'غير معروف')})."
+                )
+        elif event == "page_status":
+            self.page_status[payload["url"]] = payload
+            try:
+                save_page_status(self.page_status)
+            except OSError:
+                logging.exception("تعذر حفظ آخر حالة للصفحات")
+            self._refresh_watch_tree()
+        elif event == "quota":
+            self.quota_var.set(f"طلبات الرفع اليوم: {payload['used']} / {payload['limit']}")
+        elif event == "ai_test_finished":
+            self._ai_test_running = False
+            if getattr(self, "ai_test_btn", None) is not None:
+                self.ai_test_btn.config(state="normal")
+            statuses = payload.get("statuses") or {}
+            if statuses:
+                self._reload_ai_tree(statuses)
+            if payload.get("error"):
+                self._log(f"توقف اختبار المفاتيح: {payload['error']}")
+        elif event == "finished":
+            self._finish_worker(payload)
 
     # ════════════════════════════════════════════════
     # إعدادات العامل — تُقرأ قبل بدء الخيط الخلفي
@@ -6718,11 +6912,16 @@ class App:
                     run_lock.release()
                 except Exception:
                     logging.exception("تعذر تحرير قفل التشغيل")
-            self.stats["total_uploaded"] += up_total
-            self.stats["total_failed"] += fail_total
+            try:
+                self.stats["total_uploaded"] += up_total
+                self.stats["total_failed"] += fail_total
+            except (KeyError, TypeError, ValueError):
+                # stats.json محرَّر يدوياً بقيم نصية كان يُسقط هذا السطر
+                # فيفقد حدث "finished" وتبقى الواجهة «قيد التشغيل» للأبد.
+                logging.exception("تعذر تحديث الإحصاءات المجمعة")
             try:
                 save_stats(self.stats)
-            except OSError:
+            except Exception:
                 logging.exception("تعذر حفظ الإحصاءات")
             try:
                 pending_total = len(load_failed_queue())
@@ -6730,16 +6929,19 @@ class App:
                 logging.exception("تعذر قراءة عدد العناصر المعلقة")
                 pending_total = None
             pending_label = pending_total if pending_total is not None else "غير معروف"
-            self._log(
-                f"انتهى! مرفوع: {up_total}, فشل فعلي: {fail_total}, "
-                f"تعذر اتصال الشبكة: {network_error_total}, أخطاء دورات: {cycle_error_total}, "
-                f"قيد الانتظار/المراجعة: {pending_label}"
-            )
-            self._uiq.put(("finished", {
-                "uploaded": up_total, "failed": fail_total, "pending": pending_total,
-                "network_errors": network_error_total, "cycle_errors": cycle_error_total,
-                "fatal": fatal_error, "watch": watch_mode,
-            }))
+            try:
+                self._log(
+                    f"انتهى! مرفوع: {up_total}, فشل فعلي: {fail_total}, "
+                    f"تعذر اتصال الشبكة: {network_error_total}, أخطاء دورات: {cycle_error_total}, "
+                    f"قيد الانتظار/المراجعة: {pending_label}"
+                )
+            finally:
+                # لا شيء بعده قد يمنع إعادة تمكين أزرار الواجهة.
+                self._uiq.put(("finished", {
+                    "uploaded": up_total, "failed": fail_total, "pending": pending_total,
+                    "network_errors": network_error_total, "cycle_errors": cycle_error_total,
+                    "fatal": fatal_error, "watch": watch_mode,
+                }))
 
     def _run_cycle(self, ctx, pages, settings, watch_mode):
         """دورة واحدة: سحب الروابط الجديدة + إعادة محاولة الفاشلين + الرفع.
@@ -6752,7 +6954,10 @@ class App:
         ctx["facebook_auth_required"] = False
         uploaded_ids = load_uploaded_ids()
         receipts = load_upload_receipts()
-        receipt_source_ids = set(receipts)
+        receipt_source_ids = {
+            source_id for source_id, record in receipts.items()
+            if record.get("status") != "rejected"
+        }
         for source_id in receipt_source_ids - uploaded_ids:
             try:
                 save_uploaded_id(source_id)
@@ -7645,7 +7850,7 @@ class App:
                 "CONTENT_SAFETY_BLOCKED", "PUBLICATION_APPROVAL_REQUIRED",
                 UPLOAD_NOT_STARTED, UPLOAD_RESULT_UNKNOWN, UPLOAD_REJECTED,
             }
-            if upload_receipt_recorded:
+            if upload_receipt_recorded and result != UPLOAD_REJECTED:
                 result = upload_receipt_video_id
             elif result is None or result is False:
                 result = UPLOAD_NOT_STARTED

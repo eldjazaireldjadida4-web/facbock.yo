@@ -46,7 +46,7 @@ INTEGER_RANGES = {
     ("SETTINGS", "BETWEEN_VIDEOS"): (0, 86400),
     ("SETTINGS", "DAILY_UPLOAD_LIMIT"): (1, 1000),
     ("SETTINGS", "MAX_ATTEMPTS"): (1, 10),
-    ("SETTINGS", "FAILED_MAX_AGE_DAYS"): (1, 3650),
+    ("SETTINGS", "FAILED_MAX_AGE_DAYS"): (0, 3650),  # 0 يعطّل التقليم (موثّق في config.ini.example)
     ("WATCH", "INTERVAL_MINUTES"): (1, 1440),
     ("WATCH", "DOWNLOAD_SOCKET_TIMEOUT"): (5, 300),
     ("WATCH", "DOWNLOAD_RETRIES"): (1, 10),

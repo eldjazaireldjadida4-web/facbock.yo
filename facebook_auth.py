@@ -55,6 +55,10 @@ def parse_netscape_cookies(path: str) -> list[dict]:
 
 def _active_facebook_cookies(path: str, now: int | None = None) -> tuple[list[dict], dict]:
     current_time = int(time.time()) if now is None else int(now)
+    # الحدّ الأدنى للتطبيع: مسار ``~/cookies.txt`` كان يُفحص موسّعاً في
+    # facebook_cookie_setup_status ثم يُفتح خاماً هنا، فيظهر «جاهز» وقائمة
+    # الكوكيز فارغة في الوقت نفسه.
+    path = os.path.expanduser(str(path or "").strip())
     parsed = parse_netscape_cookies(path)
     facebook_cookies = [cookie for cookie in parsed if _is_facebook_domain(cookie["domain"])]
     active = [

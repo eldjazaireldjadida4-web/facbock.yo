@@ -132,8 +132,10 @@ def deduplicate_queue_items(items: Iterable[QueueItem] | None) -> list[QueueItem
             continue
         index = positions[source_id]
         previous = result[index]
-        previous_error = previous.get("last_error")
-        current_error = item.get("last_error")
+        # last_error قادم من ملف حالة قابل للتعديل يدوياً؛ قد يكون قائمة أو
+        # dict فينهار البحث في القاموس بخطأ غير مفهوم. نطبّعه إلى نص دائماً.
+        previous_error = str(previous.get("last_error") or "")
+        current_error = str(item.get("last_error") or "")
         merged = {**previous, **item}
         try:
             merged["attempts"] = max(int(previous.get("attempts", 0)), int(item.get("attempts", 0)))
@@ -265,6 +267,8 @@ def split_duplicate_review_queue(
     remaining = []
     safety_held = []
     for item in items or []:
+        if not isinstance(item, Mapping):
+            continue
         if item.get("last_error") in {
             "content_safety_review_required",
             "publication_approval_required",
@@ -293,6 +297,8 @@ def release_policy_holds(
     released = []
     count = 0
     for item in items or []:
+        if not isinstance(item, Mapping):
+            continue
         entry = dict(item)
         if entry.get("last_error") in {
             "content_safety_review_required",
@@ -316,6 +322,8 @@ def release_rights_holds(
     released = []
     count = 0
     for item in items or []:
+        if not isinstance(item, Mapping):
+            continue
         entry = dict(item)
         if entry.get("last_error") == "rights_review_required":
             entry["last_error"] = ""
@@ -467,7 +475,9 @@ def validate_unattended_oauth_token(
     try:
         with path.open("r", encoding="utf-8") as token_file:
             token = json.load(token_file)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # UnicodeDecodeError و JSONDecodeError كلاهما ValueError؛ الأول لم يكن
+        # مغطّى فكان ملف توكن تالف يُسقط فحص ما قبل التشغيل بترايس باك.
         return [f"ملف تفويض YouTube {path.name} غير قابل للقراءة أو غير صالح."]
     if not isinstance(token, dict):
         return [f"بنية ملف تفويض YouTube {path.name} غير صالحة."]

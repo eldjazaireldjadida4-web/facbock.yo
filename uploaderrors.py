@@ -10,7 +10,11 @@ import json
 RETRYABLE_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "backendError", "internalError"}
 QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded"}
 CHANNEL_LIMIT_REASONS = {"uploadLimitExceeded"}
-NON_RETRYABLE_STATUSES = {400, 401, 404, 409}
+NON_RETRYABLE_STATUSES = {400, 401, 409}
+# 404/410 داخل جلسة رفع قابلة للاستئناف تعني أن الجلسة انتهت أو أُلغيت، لا أن
+# الطلب نفسه مرفوض: إعادة المحاولة على العنوان نفسه ميؤوس منها، وتسجيلها
+# «مرفوضاً» يحذف الملف ويمنع الإعادة الآلية.
+SESSION_EXPIRED_STATUSES = {404, 410}
 
 
 def _http_status(error):
@@ -47,6 +51,8 @@ def classify_upload_error(error):
         return "retryable"
     if status == 403:
         return "auth"
+    if status in SESSION_EXPIRED_STATUSES:
+        return "session_expired"
     if status in NON_RETRYABLE_STATUSES:
         return "fatal"
     return "retryable"

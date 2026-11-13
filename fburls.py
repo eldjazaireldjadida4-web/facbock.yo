@@ -11,6 +11,19 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from facebook_scraper import canonicalize_facebook_video_url, facebook_media_id
 
 FACEBOOK_HOSTS = ("facebook.com", "fb.com")
+# مسارات فيسبوك المحجوزة: ليست أسماء صفحات، فلا تُعاد كتابتها إلى /reels.
+RESERVED_PATHS = frozenset({
+    "profile.php", "pages", "people", "reel", "reels", "videos", "watch", "share",
+    "groups", "marketplace", "events", "gaming", "photo", "story.php", "permalink.php",
+    "media", "plugins", "login", "help", "policies", "business", "ads", "settings",
+    "privacy", "legal", "l.php", "dialog", "hashtag", "search",
+})
+# أسماء تبويبات الصفحة التي تُستبدل بتبويب الريلز.
+PAGE_TAB_SEGMENTS = frozenset({
+    "about", "photos", "posts", "videos", "reels", "reviews", "community",
+    "mentions", "followers", "following", "map", "services", "shop", "live",
+    "events", "notes", "insights", "settings", "about_profile_transparency",
+})
 
 
 def normalize_channel_url(url):
@@ -53,8 +66,14 @@ def normalize_channel_url(url):
     if reels_tab_selected:
         query = urlencode((("sk", "reels_tab"),))
         return urlunparse(("https", "www.facebook.com", path, "", query, ""))
-    if len(segments) == 1:
+    page_segment = segments[0] if segments else ""
+    is_page_path = bool(page_segment) and page_segment.lower() not in RESERVED_PATHS
+    if len(segments) == 1 and is_page_path:
         path = f"/{segments[0]}/reels"
+    elif len(segments) >= 2 and is_page_path and segments[1].lower() in PAGE_TAB_SEGMENTS:
+        # رابط منسوخ من تبويب الصفحة (About/Photos/Posts…) كان يُمرَّر كما هو
+        # فيُكشط التبويب الخطأ ويعود «لا فيديوهات جديدة» بدل خطأ مفهوم.
+        path = f"/{page_segment}/reels"
     elif about_selected:
         query = urlencode((("sk", "reels_tab"),))
         return urlunparse(("https", "www.facebook.com", path, "", query, ""))

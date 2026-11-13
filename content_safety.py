@@ -140,17 +140,36 @@ def validate_operator_rights_settings(settings):
     return []
 
 
-def load_rights_manifest(path):
-    try:
-        with open(path, "r", encoding="utf-8") as source:
-            manifest = json.load(source)
-    except FileNotFoundError:
-        return {"version": 1, "items": {}}
-    except (OSError, json.JSONDecodeError, TypeError) as error:
-        raise ValueError(f"ملف سجل الحقوق غير صالح: {path}") from error
+def _read_manifest_file(path):
+    with open(path, "r", encoding="utf-8") as source:
+        manifest = json.load(source)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("items"), dict):
         raise ValueError(f"بنية سجل الحقوق غير صالحة: {path}")
     return manifest
+
+
+def load_rights_manifest(path):
+    """يقرأ سجل الحقوق، ويسقط إلى نسخة احتياطية صالحة عند تلف الأساسي.
+
+    بلا هذا السقوط، انقطاع كهرباء أثناء الكتابة يجعل كل حفظ لاحق يفشل ويوقف
+    الرفع حتى يتدخل إنسان ويصلح الملف. غياب الملف الأساسي يبقى «سجلاً فارغاً»
+    عمداً: النسخ الاحتياطية لا تُحيي سجلاً حذفه المشغّل بنفسه.
+    """
+    try:
+        return _read_manifest_file(path)
+    except FileNotFoundError:
+        return {"version": 1, "items": {}}
+    except (OSError, ValueError, TypeError) as primary_error:
+        errors = [primary_error]
+        for candidate in (f"{path}.bak1", f"{path}.bak2"):
+            try:
+                manifest = _read_manifest_file(candidate)
+            except (OSError, ValueError, TypeError) as error:
+                errors.append(error)
+                continue
+            logging.warning("تم استرداد سجل الحقوق من النسخة الاحتياطية: %s", candidate)
+            return manifest
+        raise ValueError(f"ملف سجل الحقوق غير صالح: {path}") from errors[-1]
 
 
 def get_rights_record(source_id, path):
@@ -180,7 +199,21 @@ def save_rights_record(source_id, record, path):
         with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump(manifest, output, ensure_ascii=False, indent=2)
             output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
         os.replace(temp_path, path)
+        if os.name == "posix":
+            try:
+                directory = os.open(parent, os.O_RDONLY)
+            except OSError:
+                directory = None
+            if directory is not None:
+                try:
+                    os.fsync(directory)
+                except OSError:
+                    pass
+                finally:
+                    os.close(directory)
     except Exception:
         try:
             os.unlink(temp_path)
