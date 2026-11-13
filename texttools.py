@@ -34,6 +34,27 @@ def _is_unicode_word_char(char):
     return char == "_" or char.isalnum() or unicodedata.category(char) in {"Mn", "Mc", "Me"}
 
 
+def _safe_cut(text, limit):
+    """يقصّ عند حدّ لا يقطع عنقوداً مرئياً (حركة، ZWJ، علم، إيموجي معدَّل).
+
+    القصّ الخام كان يترك حركة معلّقة في نهاية العنوان أو نصف علم 🇸🇦، فيظهر
+    العنوان مشوّهاً على YouTube بلا سبب مفهوم.
+    """
+    limit = max(0, int(limit))
+    cut = text[:limit]
+    while cut and (
+        unicodedata.category(cut[-1]) in {"Mn", "Mc", "Me"}
+        or cut[-1] in "\u200d\ufe0f\ufe0e"
+        or 0x1F3FB <= ord(cut[-1]) <= 0x1F3FF
+        or (
+            0x1F1E6 <= ord(cut[-1]) <= 0x1F1FF
+            and not (len(cut) > 1 and 0x1F1E6 <= ord(cut[-2]) <= 0x1F1FF)
+        )
+    ):
+        cut = cut[:-1]
+    return cut or text[:limit]
+
+
 def _remove_hashtags(text):
     """يحذف الوسم العربي كاملاً بما فيه الحركات المركبة، دون ابتلاع علامات الترقيم."""
     output = []
@@ -43,7 +64,9 @@ def _remove_hashtags(text):
             end = index + 1
             has_base = False
             while end < len(text) and _is_unicode_word_char(text[end]):
-                has_base = has_base or text[end] == "_" or text[end].isalnum()
+                # حرف واحد يكفي؛ الأرقام وحدها ليست وسماً: "#1" رقم حلقة،
+                # و"C#9" اسم لغة/إصدار، وحذفهما يمحو المعنى.
+                has_base = has_base or text[end].isalpha()
                 end += 1
             if has_base:
                 index = end
@@ -130,11 +153,15 @@ def _truncate_smart(text, limit=100):
         return ""
     if len(text) <= limit:
         return text
-    cut = text[:limit]
+    cut = _safe_cut(text, limit)
     if " " in cut[:-1]:
-        cut = cut.rsplit(" ", 1)[0]
+        head = cut.rsplit(" ", 1)[0]
+        # حدّ الكلمة لا يجوز أن يبتلع معظم العنوان حين تكون كلمته الأخيرة
+        # طويلة (وسم مركّب مثلاً)؛ عندها نقصّ عند الحدّ مباشرة.
+        if len(head) >= limit // 2:
+            cut = head
     cut = cut.rstrip(" .،,;:-—|·")
-    return cut or text[:limit]
+    return cut or _safe_cut(text, limit)
 
 
 SYMBOL_RUN_RE = re.compile(r"([^\w\s\u0600-\u06FF])\1{1,}")
@@ -426,14 +453,14 @@ def ensure_source_attribution(description, source_page="", source_url="", log_cb
         if len(body) > YOUTUBE_DESCRIPTION_MAX:
             if log_cb:
                 log_cb(f"قُصّر الوصف إلى {YOUTUBE_DESCRIPTION_MAX} حرفاً لحد YouTube؛ راجعه قبل النشر.")
-            return body[:YOUTUBE_DESCRIPTION_MAX].rstrip()
+            return _safe_cut(body, YOUTUBE_DESCRIPTION_MAX).rstrip()
         return body
-    attribution_text = attribution_text[:YOUTUBE_DESCRIPTION_MAX].rstrip()
+    attribution_text = _safe_cut(attribution_text, YOUTUBE_DESCRIPTION_MAX).rstrip()
     separator = "\n\n" if body else ""
     body_limit = max(0, YOUTUBE_DESCRIPTION_MAX - len(separator) - len(attribution_text))
     if len(body) > body_limit and log_cb:
         log_cb(f"قُصّر متن الوصف لإبقاء المصدر ضمن حد YouTube البالغ {YOUTUBE_DESCRIPTION_MAX} حرفاً.")
-    body = body[:body_limit].rstrip()
+    body = _safe_cut(body, body_limit).rstrip()
     return "\n\n".join(part for part in (body, attribution_text) if part)
 
 
@@ -453,7 +480,7 @@ def build_description(original_desc, extra_desc, title, tags,
         parts.append(credit_line.strip())
     description = "\n\n".join(parts)
     if len(description) > YOUTUBE_DESCRIPTION_MAX:
-        description = description[:YOUTUBE_DESCRIPTION_MAX].rstrip()
+        description = _safe_cut(description, YOUTUBE_DESCRIPTION_MAX).rstrip()
         if log_cb:
             log_cb(f"قُصّر الوصف إلى {YOUTUBE_DESCRIPTION_MAX} حرفاً لحد YouTube؛ راجعه قبل النشر.")
     return description

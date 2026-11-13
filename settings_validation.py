@@ -47,24 +47,30 @@ INTEGER_RANGES = {
     ("SETTINGS", "DAILY_UPLOAD_LIMIT"): (1, 1000),
     ("SETTINGS", "MAX_ATTEMPTS"): (1, 10),
     ("SETTINGS", "FAILED_MAX_AGE_DAYS"): (0, 3650),  # 0 يعطّل التقليم (موثّق في config.ini.example)
-    ("WATCH", "INTERVAL_MINUTES"): (1, 1440),
+    ("WATCH", "INTERVAL_MINUTES"): (1, 720),
     ("WATCH", "DOWNLOAD_SOCKET_TIMEOUT"): (5, 300),
     ("WATCH", "DOWNLOAD_RETRIES"): (1, 10),
     ("WATCH", "SCRAPE_SOCKET_TIMEOUT"): (5, 120),
     ("WATCH", "SCRAPE_RETRIES"): (1, 10),
     ("WATCH", "PAGE_LOAD_TIMEOUT"): (5, 120),
     ("WATCH", "NETWORK_PREFLIGHT_TIMEOUT"): (5, 120),
-    ("STUDIO", "CATEGORY"): (1, 99),
     ("STUDIO", "PG_SCROLL"): (0, 100),
     ("STUDIO", "PG_LIMIT"): (1, 100),
-    ("STUDIO", "LOGO_SCALE"): (1, 100),
-    ("STUDIO", "LOGO_OPACITY"): (0, 100),
-    ("STUDIO", "LOGO_COVER_WIDTH"): (1, 100),
+    # نفس حدود فحص وقت التشغيل في _capture_worker_settings؛ اختلافهما كان يسمح
+    # بحفظ إعداد ثم رفض بدء العامل به.
+    ("STUDIO", "LOGO_SCALE"): (1, 60),
+    ("STUDIO", "LOGO_OPACITY"): (5, 100),
+    ("STUDIO", "LOGO_COVER_WIDTH"): (10, 40),
     ("STUDIO", "SCHEDULE_MIN"): (1, 10080),
     ("STUDIO", "SCHEDULE_MAX"): (1, 10080),
     ("STUDIO", "MIN_DURATION"): (0, 43200),
     ("STUDIO", "MAX_DURATION"): (0, 43200),
 }
+
+# معرّفات تصنيفات YouTube المقبولة؛ أي رقم آخر يُرفض بـ400 invalidCategory.
+YOUTUBE_CATEGORY_IDS = frozenset({
+    "1", "2", "10", "15", "17", "19", "20", "22", "23", "24", "25", "26", "27", "28", "29",
+})
 
 PATH_SETTINGS = (
     ("SETTINGS", "VIDEO_DIRECTORY"),
@@ -133,6 +139,9 @@ def validate_configuration(cfg: configparser.ConfigParser) -> list[str]:
     rights_basis = _get(cfg, "STUDIO", "RIGHTS_OPERATOR_BASIS", "owned").lower()
     if rights_basis not in RIGHTS_BASIS_LABELS:
         errors.append("STUDIO.RIGHTS_OPERATOR_BASIS غير صالح.")
+    category = _get(cfg, "STUDIO", "CATEGORY", "25").strip()
+    if category and category not in YOUTUBE_CATEGORY_IDS:
+        errors.append("STUDIO.CATEGORY ليس معرّف تصنيف صالحاً في YouTube.")
     tags = _get(cfg, "STUDIO", "TAGS", "")
     transcription_model = _get(cfg, "AI", "TRANSCRIPTION_MODEL", "base").lower()
     if transcription_model not in LOCAL_TRANSCRIPTION_MODELS:

@@ -383,7 +383,10 @@ def test_shorts_requires_explicit_manual_rights_and_records_confirmation(monkeyp
     assert upload_calls[0]["publication_approved"] is True
     assert upload_calls[0]["on_confirmed"] is not None
     assert thumbnail_calls == [("abcdefghijk", thumbnail_preview)]
-    assert saved_rights[0][0] == "source-reel-1"
+    # الإقرار يُحفظ تحت معرّف Shorts المستقل، لا معرّف الأصل: الكتابة على
+    # معرّف الأصل كانت تستبدل إقرار فيديو منشور بالفعل.
+    assert saved_rights[0][0] == "source-reel-1_shorts"
+    assert all(source_id != "source-reel-1" for source_id, _record, _path in saved_rights)
     assert saved_receipts == [("source-reel-1_shorts", "abcdefghijk")]
     assert saved_ids == ["source-reel-1_shorts"]
     assert history[-1]["status"] == "uploaded"

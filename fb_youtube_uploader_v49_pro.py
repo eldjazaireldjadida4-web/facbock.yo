@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.4"
+__version__ = "4.49.5"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1059,10 +1059,11 @@ def _youtube_duration_seconds(value):
 
 def fetch_channel_video_index(youtube, account_key="", force=False, log_cb=None):
     """يبني فهرساً مخزناً مؤقتاً لعناوين فيديوهات القناة ومددها عبر YouTube Data API."""
-    cached = _read_json(CHANNEL_INDEX_FILE, {})
+    cached = _read_json(CHANNEL_INDEX_FILE, {}, expected_type=dict)
     if not isinstance(cached, dict):
         cached = {}
-    cached_videos = cached.get("videos", [])
+    raw_videos = cached.get("videos")
+    cached_videos = [video for video in raw_videos if isinstance(video, dict)] if isinstance(raw_videos, list) else []
     cached_account = str(cached.get("account_key", ""))
     same_cached = bool(cached_videos) and cached_account == str(account_key)
     try:
@@ -1165,7 +1166,16 @@ def find_channel_title_matches(title, duration, channel_videos, threshold=0.90, 
         elif score < threshold and fingerprint != previous:
             continue
         previous_duration = video.get("duration")
-        delta = abs(float(duration) - float(previous_duration)) if duration is not None and previous_duration is not None else None
+        delta = None
+        if duration is not None and previous_duration is not None:
+            try:
+                delta = abs(float(duration) - float(previous_duration))
+            except (TypeError, ValueError):
+                delta = None
+        # عنوانان متشابهان بمدة مختلفة جداً هما حلقتان لا نسخة مكررة؛
+        # كان الفارق يُحسب للعرض فقط فتُحجب الحلقة الجديدة إلى الأبد.
+        if delta is not None and delta > max(5.0, 0.15 * float(duration)):
+            continue
         matches.append({
             "video_id": video.get("video_id", ""),
             "title": video.get("title", ""),
@@ -1174,7 +1184,15 @@ def find_channel_title_matches(title, duration, channel_videos, threshold=0.90, 
             "similarity": round(score, 3),
             "duration_delta": round(delta, 1) if delta is not None else None,
         })
-    return sorted(matches, key=lambda item: (item["similarity"], -(item["duration_delta"] or 0)), reverse=True)[:limit]
+    # تشابه أعلى أولاً، ثم أقرب مدة، ثم ما لا مدة له في الآخر.
+    return sorted(
+        matches,
+        key=lambda item: (
+            -item["similarity"],
+            item["duration_delta"] is None,
+            item["duration_delta"] or 0.0,
+        ),
+    )[:limit]
 
 def should_pause_for_unverified_channel(dedupe_enabled, review_enabled, index_verified):
     return bool(dedupe_enabled and not review_enabled and not index_verified)
@@ -1184,7 +1202,9 @@ def remember_content(title, media_hash=None, frame_fingerprint=None, video_id=No
     state = load_state()
     fingerprint = "" if is_generic_title(title) else content_fingerprint(title)
     fingerprints = state.get("title_fingerprints", [])
-    if len(fingerprint) >= 10:
+    if fingerprint:
+        # القاعدة ">= 10" تخصّ المقارنة التقريبية فقط؛ إسقاط البصمات القصيرة
+        # كان يجعل فرع التطابق الحرفي في is_duplicate_content غير قابل للوصول.
         fingerprints.append(fingerprint)
         state["title_fingerprints"] = fingerprints[-2000:]
     hashes = state.get("content_sha256", [])
@@ -3264,23 +3284,31 @@ YOUTUBE_THUMB_MAX_BYTES = 2_000_000  # حد YouTube للصور المصغرة 2M
 
 
 def _thumbnail_upload_path(path):
-    """يعيد مساراً ضمن حد 2MB؛ يحوّل إلى JPEG متدرّج الجودة إذا تجاوز PNG الحد."""
+    """يعيد مساراً ضمن حد 2MB، أو None إذا تعذّر تجهيزه.
+
+    كان يعيد مسار JPEG فارغاً أو أكبر من الحد عند فشل التحويل، فيُرفع ملف
+    تالف ويظهر سبب مضلّل بدل رسالة التحويل الحقيقية.
+    """
     try:
         if os.path.getsize(path) <= YOUTUBE_THUMB_MAX_BYTES:
             return path
     except OSError:
-        return path
+        return None
     descriptor, jpg_path = tempfile.mkstemp(prefix="fb-youtube-thumb-", suffix=".jpg")
     os.close(descriptor)
-    for quality in (90, 80, 70):
-        try:
+    try:
+        for quality in (90, 80, 70):
             with Image.open(path) as source:
                 source.convert("RGB").save(jpg_path, "JPEG", quality=quality, optimize=True)
             if os.path.getsize(jpg_path) <= YOUTUBE_THUMB_MAX_BYTES:
-                break
-        except Exception:
-            break
-    return jpg_path
+                return jpg_path
+    except Exception as error:
+        logging.warning("تعذر تحويل الصورة المصغرة إلى JPEG: %s", redact_sensitive_text(error))
+    try:
+        os.unlink(jpg_path)
+    except OSError:
+        pass
+    return None
 
 
 def _http_error_reason(error):
@@ -3312,6 +3340,10 @@ def upload_thumbnail(youtube, video_id, path, log_cb=None):
             log_cb("ملف الصورة المصغرة مفقود")
         return False
     upload_path = _thumbnail_upload_path(path)
+    if not upload_path:
+        if log_cb:
+            log_cb("تعذر تجهيز الصورة المصغرة ضمن حد YouTube (2MB)؛ اكتمل رفع الفيديو بدونها.")
+        return False
     converted = upload_path != path
     try:
         youtube.thumbnails().set(videoId=video_id,
@@ -8600,13 +8632,6 @@ class App:
                     self._log("لم تُرفع Shorts؛ بقيت نقاط حقوق غير مكتملة: " + reason)
                     record("rights_review_required", reason, title=clip_data["title"])
                     return
-                try:
-                    save_rights_record(item["id"], rights_record, rights_manifest_path)
-                except Exception as error:
-                    reason = f"تعذر حفظ الإقرار: {redact_sensitive_text(str(error))}. تحقق من صلاحيات ونسخ rights_manifest.json؛ لم يبدأ الرفع."
-                    self._log(reason)
-                    record("rights_record_save_failed", reason, title=clip_data["title"])
-                    return
                 clip_data["rights_record"] = rights_record
                 publication_approved = True
                 if settings.get("content_review_enabled"):
@@ -8658,6 +8683,19 @@ class App:
                 record("invalid_description", reason, title=clip_data["title"])
                 return
             shorts_tags = normalize_youtube_tags(shorts_tags, self._log)
+            # يُحفظ تحت معرّف Shorts المستقل، وبعد اجتياز كل البوابات: كان
+            # يُكتب تحت معرّف الأصل فيستبدل إقرار فيديو منشور، وقبل رفض محتمل.
+            if rights_record is not None:
+                try:
+                    save_rights_record(shorts_source_id, rights_record, rights_manifest_path)
+                except Exception as error:
+                    reason = (
+                        f"تعذر حفظ إقرار حقوق Shorts: {redact_sensitive_text(str(error))}. "
+                        "تحقق من صلاحيات rights_manifest.json؛ لم يبدأ الرفع."
+                    )
+                    self._log(reason)
+                    record("rights_record_save_failed", reason, title=clip_data["title"])
+                    return
             upload_receipt_recorded = False
 
             def persist_short_receipt(youtube_id):
@@ -8703,7 +8741,10 @@ class App:
                     try:
                         persist_short_receipt(confirmed_id)
                     except Exception as error:
-                        save_uploaded_id(shorts_source_id)
+                        try:
+                            save_uploaded_id(shorts_source_id)
+                        except (OSError, RuntimeError, ValueError):
+                            logging.exception("تعذر حفظ معرّف Shorts المؤكد محلياً")
                         reason = (
                             f"YouTube أكد Shorts بالمعرّف {confirmed_id}، لكن تعذر حفظ الإيصال: "
                             f"{redact_sensitive_text(str(error))}. لا تُعد الرفع؛ طابق الفيديو يدوياً في القناة."
