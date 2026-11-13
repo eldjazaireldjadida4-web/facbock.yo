@@ -1,6 +1,6 @@
 # سجلّ التغييرات
 
-## 4.48.11 — 2026-11-10
+## 4.48.11 — 2026-11-13
 
 - ترقية `opentelemetry-api` المقفول إلى 1.45.2 لإغلاق خلل استهلاك المعالج في تحليل ترويسة التتبّع، المبلّغ عنه في [GHSA-mf5v-w3w3-f6cg](https://github.com/open-telemetry/opentelemetry-python/security/advisories/GHSA-mf5v-w3w3-f6cg).
 - تثبيت الحد الأدنى 1.45.2 أيضاً في `requirements.txt` حتى لا يعيد تثبيت غير مقفول إصداراً متأثراً.
