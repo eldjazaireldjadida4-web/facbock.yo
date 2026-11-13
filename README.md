@@ -1,8 +1,10 @@
 # FB → YouTube Uploader Pro
 
+[![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
+
 أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.4**.
 
-سجل الإصدارات: `CHANGELOG.md`.
+سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يُشغّل الاختبارات و`ruff` و`compileall` تلقائياً عبر GitHub Actions (`.github/workflows/ci.yml`).
 
 ### سقف رفع صادق وأرشيف إيصالات — 4.49.4
 
