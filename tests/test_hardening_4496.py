@@ -169,3 +169,51 @@ def test_shorts_records_intent_before_the_first_byte(tmp_path, monkeypatch) -> N
     assert statuses.index("shorts_upload_started") < statuses.index("uploaded")
     assert saved_rights == ["reel-1_shorts"]
     assert saved_receipts == ["reel-1_shorts"]
+
+
+class _AfterRoot:
+    def __init__(self):
+        self.after_calls = []
+        self.cancelled = []
+
+    def after(self, delay, callback=None):
+        self.after_calls.append((delay, callback))
+        return "job-1"
+
+    def after_cancel(self, job):
+        self.cancelled.append(job)
+
+
+class _QuietLog:
+    def configure(self, **_kwargs):
+        pass
+
+    def delete(self, *_args):
+        pass
+
+    def insert(self, *_args):
+        pass
+
+    def see(self, *_args):
+        pass
+
+
+def test_poll_job_is_cancelled_before_close() -> None:
+    """destroy() لا يلغي after؛ النبضة المعلّقة تطبع خطأ Tcl عند كل خروج."""
+    import queue
+
+    instance = app.App.__new__(app.App)
+    instance.root = _AfterRoot()
+    instance._logq = queue.Queue()
+    instance._uiq = queue.Queue()
+    instance._last_log_replace = False
+    instance.log_txt = _QuietLog()
+    instance._closing = False
+
+    instance._poll()
+    assert instance._poll_after_id == "job-1"
+
+    instance._cancel_poll()
+
+    assert instance.root.cancelled == ["job-1"]
+    assert instance._poll_after_id is None

@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.8"
+__version__ = "4.49.9"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -4694,10 +4694,26 @@ class App:
                 pass
         self._pending_review = None
 
+    def _cancel_poll(self):
+        """يلغي نبضة الواجهة المجدولة قبل الإغلاق.
+
+        destroy() لا يلغي after؛ النبضة المعلّقة تُنفَّذ بعد تدمير الجذر
+        فتطبع «invalid command name …_poll» في الطرفية عند كل خروج.
+        """
+        job = getattr(self, "_poll_after_id", None)
+        self._poll_after_id = None
+        if job is None:
+            return
+        try:
+            self.root.after_cancel(job)
+        except tk.TclError:
+            pass
+
     def _on_close(self):
         if self._closing:
             return
         self._closing = True
+        self._cancel_poll()
         self._stop.set()
         self._cancel_pending_review()
         self._save_ui_settings()
@@ -6849,9 +6865,9 @@ class App:
         if self._closing:
             return
         try:
-            self.root.after(100, self._poll)
+            self._poll_after_id = self.root.after(100, self._poll)
         except tk.TclError:
-            pass
+            self._poll_after_id = None
 
     def _drain_queues(self):
         while not self._logq.empty():
