@@ -311,16 +311,27 @@ def test_long_title_templates_preserve_title_and_shorts_marker():
     assert "…" in title
 
 
-def test_ai_metadata_rejects_blank_or_link_only_titles(monkeypatch):
+def test_ai_metadata_drops_an_unusable_title_but_keeps_the_description(monkeypatch):
     for invalid_title in ("", "   ", "https://example.com/video", "#Shorts", "!!!"):
         payload = json.dumps({
             "title": invalid_title, "description": "وصف", "tags": ["وسم"]
         }, ensure_ascii=False)
         monkeypatch.setattr(app, "gemini_generate", lambda *_a, _p=payload, **_k: (_p, []))
-        assert app.ai_generate_metadata(
+        meta = app.ai_generate_metadata(
             "عنوان المصدر", "وصف المصدر", "صفحة", 30,
             "gemini-2.5-flash", "احترافي متوازن",
-        ) is None
+        )
+        # العنوان السيئ يُسقط إلى "" (فتحسّنه القواعد)، لكن وصفاً ووسوماً
+        # صالحة لا تُهمل بسببه.
+        assert meta is not None
+        assert meta["title"] == ""
+        assert meta["description"] == "وصف"
+
+    empty_payload = json.dumps({"title": "!!!", "description": "", "tags": []}, ensure_ascii=False)
+    monkeypatch.setattr(app, "gemini_generate", lambda *_a, _p=empty_payload, **_k: (_p, []))
+    assert app.ai_generate_metadata(
+        "عنوان المصدر", "وصف المصدر", "صفحة", 30, "gemini-2.5-flash", "احترافي متوازن",
+    ) is None
 
 
 def test_upload_rejects_empty_title_before_sending_request(tmp_path: Path):
