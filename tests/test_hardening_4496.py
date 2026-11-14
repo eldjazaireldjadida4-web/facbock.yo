@@ -131,12 +131,24 @@ def test_shorts_records_intent_before_the_first_byte(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(app, "append_history", lambda rec: history.append(rec) or True)
     monkeypatch.setattr(app, "persist_upload_receipt", lambda sid, vid, **kw: saved_receipts.append(sid))
     monkeypatch.setattr(app, "save_uploaded_id", lambda _sid: None)
+
+    queue_store = {"items": []}
+    monkeypatch.setattr(app, "load_failed_queue", lambda: [dict(entry) for entry in queue_store["items"]])
+
+    def _save_queue(items):
+        queue_store["items"] = [dict(entry) for entry in items]
+
+    monkeypatch.setattr(app, "save_failed_queue", _save_queue)
     monkeypatch.setattr(app, "send_telegram", lambda *_a, **_k: None)
 
     def fake_upload(_youtube, _data, *_args, **kwargs):
         statuses_at_upload.append(history[-1]["status"] if history else "")
+        kwargs["before_upload"]()
+        intents.append([(entry["id"], entry.get("last_error")) for entry in queue_store["items"]])
         kwargs["on_confirmed"]("abcdefghijk")
         return "abcdefghijk"
+
+    intents = []
 
     monkeypatch.setattr(app, "upload_video", fake_upload)
 
@@ -150,6 +162,9 @@ def test_shorts_records_intent_before_the_first_byte(tmp_path, monkeypatch) -> N
     )
 
     assert statuses_at_upload == ["shorts_upload_started"]
+    # نية مسجّلة قبل أول جزء، ثم أُزيلت بعد تأكيد الرفع
+    assert intents == [[("reel-1_shorts", "upload_in_progress")]]
+    assert queue_store["items"] == []
     statuses = [record.get("status") for record in history]
     assert statuses.index("shorts_upload_started") < statuses.index("uploaded")
     assert saved_rights == ["reel-1_shorts"]

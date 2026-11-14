@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.6"
+__version__ = "4.49.7"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -532,6 +532,24 @@ def _maybe_compact_receipts():
         compact_upload_receipts()
     except Exception:
         logging.exception("تعذر أرشفة إيصالات الرفع القديمة؛ استُمر التشغيل بالسجل الكامل")
+
+
+def _clear_shorts_marker(shorts_source_id):
+    """يحذف علامة Shorts من قائمة الانتظار بعد نتيجة محسومة."""
+    try:
+        queue = load_failed_queue()
+        updated = remove_queue_item(queue, shorts_source_id)
+        if updated != queue:
+            save_failed_queue(updated)
+    except Exception:
+        logging.exception("تعذر حذف علامة Shorts %s من قائمة الانتظار", shorts_source_id)
+
+
+def is_shorts_marker(item):
+    """مدخل Shorts في قائمة الانتظار علامة مطابقة لا مصدر كشط."""
+    if not isinstance(item, dict):
+        return False
+    return bool(item.get("shorts_of")) or str(item.get("id") or "").endswith("_shorts")
 
 
 def _active_uploaded_ids(receipts, uploaded_ids):
@@ -5883,6 +5901,18 @@ class App:
             if decision != "retry":
                 messagebox.showerror("تعذر الحفظ", "تغيرت حالة العنصر؛ أعد فحص قائمة الانتظار.", parent=self.root)
                 return
+            if is_shorts_marker(item):
+                # علامة Shorts ليست مصدراً قابلاً للتنزيل؛ إبقاؤها «معتمدة»
+                # كان سيجعلها تدور في القائمة بلا نهاية.
+                updated = remove_queue_item(updated, source_id)
+                save_failed_queue(updated)
+                self._log(f"حُذفت علامة Shorts {source_id} بعد تأكيد عدم وجود الفيديو؛ أعد توليد المقطع من الأصل عند الحاجة.")
+                messagebox.showinfo(
+                    "حُذفت علامة Shorts",
+                    "النسخة القصيرة لم تُرفع. أعد توليدها من الفيديو الأصلي إن أردت نشرها.",
+                    parent=self.root,
+                )
+                return
             save_failed_queue(updated)
             self._log(f"اعتمد المشغّل إعادة محاولة المصدر {source_id} بعد التحقق من YouTube Studio.")
             messagebox.showinfo("أُجيزت إعادة المحاولة", "أُعيد العنصر إلى قائمة العمل؛ لن يبدأ الرفع إلا في الدورة التالية.", parent=self.root)
@@ -7511,7 +7541,9 @@ class App:
                 known_page = history_pages.get(str(stale.get("id") or "").strip(), "")
                 if known_page:
                     stale["page"] = known_page
-        process_list = [dict(it, retry=True) for it in failed_q] + fresh
+        # علامات "_shorts" ليست روابط Facebook؛ تمريرها إلى قائمة العمل كان
+        # سيجعل العامل يحاول تنزيلها كفيديو جديد. تُبقى للمطابقة اليدوية فقط.
+        process_list = [dict(it, retry=True) for it in failed_q if not is_shorts_marker(it)] + fresh
         failed_q = held_duplicate_q
         total = len(process_list)
         if total == 0:
@@ -8764,6 +8796,18 @@ class App:
                 save_uploaded_id(shorts_source_id)
                 upload_receipt_recorded = True
 
+            def persist_shorts_intent():
+                """نية رفع قبل أول جزء: انقطاع بين آخر جزء والإيصال يترك فيديو بلا أثر."""
+                queue = load_failed_queue()
+                updated = begin_upload_attempt(queue, {
+                    **item,
+                    "id": shorts_source_id,
+                    "shorts_of": item.get("id", ""),
+                    "upload_title": clip_data.get("title", ""),
+                    "upload_account": ctx.get("account", ""),
+                })
+                save_failed_queue(updated)
+
             result = upload_video(
                 ctx["yt"], clip_data, selected_privacy, None,
                 shorts_tags, settings.get("category", "22"),
@@ -8773,6 +8817,7 @@ class App:
                 content_review_required=bool(settings.get("content_review_enabled")),
                 publication_approved=publication_approved,
                 allow_public_automation=allow_public_automation,
+                before_upload=persist_shorts_intent,
                 on_confirmed=persist_short_receipt,
                 stop_event=self._stop,
             )
@@ -8780,6 +8825,8 @@ class App:
                 "used": ctx["quota"].used,
                 "limit": ctx["quota"].daily_limit,
             }))
+            if result == UPLOAD_NOT_STARTED:
+                _clear_shorts_marker(shorts_source_id)
             if result == "QUOTA_ERROR":
                 ctx["quota"].mark_exhausted()
                 reason = "نفدت حصة YouTube أثناء رفع Shorts؛ انتظر التجديد اليومي ولا تكرر الرفع الآن."
@@ -8816,6 +8863,7 @@ class App:
                     account=ctx.get("account", ""),
                     youtube_id=confirmed_id,
                 )
+                _clear_shorts_marker(shorts_source_id)
                 if history_saved is False:
                     self._log("تأكد رفع Shorts وحُفظ إيصال YouTube، لكن تعذر تحديث سجل history.jsonl. لا تُعد الرفع؛ طابق الإيصال يدوياً.")
                 send_telegram(

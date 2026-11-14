@@ -362,6 +362,7 @@ def test_shorts_requires_explicit_manual_rights_and_records_confirmation(monkeyp
     monkeypatch.setattr(app, "append_history", lambda record: history.append(record) or True)
     monkeypatch.setattr(app, "persist_upload_receipt", lambda source_id, video_id, **_kwargs: saved_receipts.append((source_id, video_id)))
     monkeypatch.setattr(app, "save_uploaded_id", lambda source_id: saved_ids.append(source_id))
+    monkeypatch.setattr(app, "_clear_shorts_marker", lambda *_a, **_k: None)
     monkeypatch.setattr(app, "send_telegram", lambda *_args, **_kwargs: None)
 
     def fake_upload(_youtube, _data, *_args, **kwargs):
