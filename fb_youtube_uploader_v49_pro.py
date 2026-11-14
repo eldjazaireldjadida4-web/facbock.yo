@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.9"
+__version__ = "4.49.10"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1485,13 +1485,16 @@ def _backoff_seconds(attempt):
     return base + random.uniform(0, RETRY_DELAY / 2)
 
 
-def verify_upload(youtube, video_id, requested_privacy, sched_time=None, log_cb=None):
+def verify_upload(youtube, video_id, requested_privacy, sched_time=None, log_cb=None,
+                  expected_title=None):
     """يتحقق بعد الرفع أن الفيديو ظهر وبالخصوصية/الجدولة المطلوبة (best-effort).
 
     يكشف الحالة الشهيرة: الفيديو يُرفع لكن يبقى private لأن مشروع Google غير مُدقّق.
     """
     try:
-        response = youtube.videos().list(part="status,processingDetails", id=video_id).execute()
+        response = youtube.videos().list(
+            part="status,processingDetails,snippet", id=video_id
+        ).execute()
     except HttpError as error:
         logging.warning("تعذر التحقق من حالة الفيديو %s: %s", video_id, error)
         if log_cb:
@@ -1512,6 +1515,20 @@ def verify_upload(youtube, video_id, requested_privacy, sched_time=None, log_cb=
     processing_status = str(processing.get("processingStatus") or "")
     if processing_status:
         status = {**status, "processingStatus": processing_status}
+    snippet = item.get("snippet") or {}
+    stored_title = str(snippet.get("title") or "")
+    if expected_title and stored_title and stored_title != expected_title:
+        # «الفيديو بلا عنوان» في الواقع غالباً عنوان بديل أو محارف اتجاه؛
+        # قراءته من YouTube تجعل الفرق مرئياً في السجل بدل التخمين.
+        logging.warning(
+            "عنوان الفيديو %s على YouTube (%r) يختلف عن المُرسل (%r)",
+            video_id, stored_title, expected_title,
+        )
+        if log_cb:
+            log_cb(
+                f"تنبيه: العنوان المحفوظ على YouTube «{stored_title[:60]}» يختلف عن "
+                f"العنوان المُرسل «{expected_title[:60]}»."
+            )
     actual = status.get("privacyStatus")
     if sched_time:
         if status.get("publishAt"):
@@ -3856,6 +3873,15 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
             return "INVALID_TITLE"
         if upload_title != raw_title:
             logging.info("نُظّف عنوان الرفع أو قُصّ إلى حد YouTube المسموح.")
+    if is_generic_title(upload_title):
+        # «مقطع فيديو» و«Video» عناوين بديلة من مسار التنظيف؛ رفعها يعني
+        # فيديو بلا عنوان حقيقي على YouTube.
+        if log_cb:
+            log_cb(
+                f"أُوقف الرفع: العنوان «{upload_title[:40]}» عام أو بديل وليس عنواناً حقيقياً. "
+                "أدخل عنواناً واضحاً في نافذة المراجعة."
+            )
+        return "INVALID_TITLE"
     video_data["title"] = upload_title
     description = video_data.get("desc", "")
     if not isinstance(description, str):
@@ -4094,7 +4120,8 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
         verification = None
         try:
             verification = verify_upload(
-                youtube, video_id, body["status"]["privacyStatus"], sched_time, log_cb
+                youtube, video_id, body["status"]["privacyStatus"], sched_time, log_cb,
+                expected_title=upload_title,
             )
         except Exception as error:
             logging.exception("رُفع الفيديو لكن تعذّر التحقق من حالته")
@@ -7948,6 +7975,32 @@ class App:
                 preserve_facebook_title,
             )
             video_data["preserve_facebook_title"] = preserve_facebook_title
+            if is_generic_title(video_data["title"]):
+                # اسم صفحة فقط -> مسار التنظيف ينتج «مقطع فيديو»؛ رفعها يعني
+                # فيديو بلا عنوان حقيقي على YouTube.
+                placeholder_message = (
+                    "عنوان المصدر بعد التنظيف عام أو اسم صفحة فقط؛ لن يُرفع عنوان بديل "
+                    "مثل «مقطع فيديو»."
+                )
+                if not settings.get("review_before_upload", False):
+                    self._log(placeholder_message + " أُعيد العنصر لتراجع عنوانه يدوياً.")
+                    self._cleanup_file(video_data)
+                    failed_q = upsert_queue_item(failed_q, {
+                        **item,
+                        "last_error": "facebook_title_missing",
+                        "upload_title": "",
+                    })
+                    save_failed_queue(failed_q)
+                    append_history({
+                        "source_id": item["id"], "url": item["url"],
+                        "page": item.get("page", ""), "title": "",
+                        "status": "facebook_title_missing", "error": placeholder_message,
+                    })
+                    fail_count += 1
+                    continue
+                self._log(placeholder_message + " أدخل عنواناً واضحاً في نافذة المراجعة.")
+                video_data["title"] = ""
+                video_data["title_missing"] = True
             self._log(f"العنوان النهائي: {video_data['title'][:60]}")
             source_page = video_data.get("source_page") or item.get("page", "")
             source_url = video_data.get("source_url") or item.get("url", "")

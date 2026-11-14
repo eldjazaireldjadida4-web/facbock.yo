@@ -20,6 +20,9 @@ URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 MENTION_RE = re.compile(r"@\w+")
 HASHTAG_RE = re.compile(r"#\w+")  # retained for compatibility; Unicode-aware removal uses _remove_hashtags.
 BIDI_OVERRIDE_CHARS = str.maketrans("", "", "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+# علامات اتجاه غير مرئية (LRM/RLM/ALM) تُبقي العنوان «فارغاً» في عين المشاهد
+# وفي قوائم YouTube Studio رغم احتوائه نصاً.
+DIRECTIONAL_MARKS = str.maketrans("", "", "\u200e\u200f\u061c")
 # ضجيج إحصائي فيسبوكي يتسلل إلى العناوين (يشمل reactions التي كانت تُفلت).
 JUNK_STATS = re.compile(
     r"\b\d[\d.,]*\s*[kKmMbB]?\s*"
@@ -113,6 +116,7 @@ def sanitize_public_text(text, page_name="", remove_hashtags=False,
     else:
         text = str(text)
     text = unicodedata.normalize("NFC", text).translate(BIDI_OVERRIDE_CHARS)
+    text = text.translate(DIRECTIONAL_MARKS)
     text = URL_RE.sub(" ", text)
     text = JUNK_STATS.sub(" ", text)
     if remove_hashtags:
@@ -315,6 +319,7 @@ def preserve_source_title(title):
     if title is None:
         return ""
     text = unicodedata.normalize("NFC", str(title)).translate(BIDI_OVERRIDE_CHARS)
+    text = text.translate(DIRECTIONAL_MARKS)
     text = INVALID_TITLE_CHARS.sub(" ", text)
     return re.sub(r"\s+", " ", text).strip()
 

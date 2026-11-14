@@ -89,7 +89,7 @@ def test_upload_stops_before_quota_or_youtube_without_clear_report(tmp_path):
 
     quota = Quota()
     result = app.upload_video(
-        YouTube(), {"file": str(video), "title": "title", "desc": "description"},
+        YouTube(), {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         quota_manager=quota,
         content_review_required=True,
     )
@@ -126,7 +126,7 @@ def test_upload_rejects_unreviewed_tags(tmp_path):
 
     result = app.upload_video(
         YouTube(), {
-            "file": str(video), "title": "title", "desc": "description",
+            "file": str(video), "title": "عنوان اختبار واضح", "desc": "description",
             "content_safety_review": clear_report(video),
         },
         tags=["different-tag"],
@@ -163,7 +163,7 @@ def test_review_and_upload_use_same_budgeted_tags(monkeypatch, tmp_path):
 
     result = app.upload_video(
         YouTube(), {
-            "file": str(video), "title": "title", "desc": "description",
+            "file": str(video), "title": "عنوان اختبار واضح", "desc": "description",
             "content_safety_review": {},
         },
         tags=tags,
@@ -327,7 +327,7 @@ def test_dry_run_does_not_contact_external_review_tool(monkeypatch, tmp_path):
 
     monkeypatch.setattr(control_plane, "run_review", unexpected_review)
     report, status = app.run_policy_review(
-        {"file": str(tmp_path / "clip.mp4"), "title": "title", "desc": "description"},
+        {"file": str(tmp_path / "clip.mp4"), "title": "عنوان اختبار واضح", "desc": "description"},
         ["Facebook"],
         {"content_review_enabled": True, "dry_run": True},
     )
@@ -353,7 +353,7 @@ def test_policy_review_uses_configured_reviewer_and_logs(monkeypatch, tmp_path):
     logs = []
 
     result, status = control_plane.run_policy_review(
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         ["Facebook", "Shorts"],
         settings,
         logs.append,
@@ -362,7 +362,7 @@ def test_policy_review_uses_configured_reviewer_and_logs(monkeypatch, tmp_path):
     assert result is report
     assert status == "clear"
     assert calls[0][0] == (
-        str(video), "title", build_review_caption("description", ["Facebook", "Shorts"])
+        str(video), "عنوان اختبار واضح", build_review_caption("description", ["Facebook", "Shorts"])
     )
     assert calls[0][1] == {
         "cutter_root": settings["cutter_root"],

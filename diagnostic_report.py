@@ -24,7 +24,7 @@ from facebook_auth import facebook_cookie_setup_status
 from facebook_scraper import DEFAULT_NETWORK_PREFLIGHT_TIMEOUT
 from safe_logging import redact_sensitive_text
 
-APP_VERSION = "4.49.9"
+APP_VERSION = "4.49.10"
 REPORT_DIRECTORY = "reports"
 NETWORK_ERROR_MARKERS = (
     "network",

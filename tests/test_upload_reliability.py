@@ -51,7 +51,7 @@ def test_upload_receipt_is_saved_before_optional_verification(tmp_path):
 
     result = app.upload_video(
         youtube,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         on_confirmed=lambda video_id: youtube.events.append(("receipt", video_id)),
     )
 
@@ -74,7 +74,7 @@ def test_receipt_persistence_failure_never_reports_a_safe_retry(tmp_path):
     with pytest.raises(RuntimeError, match="mnopqrstuvw"):
         app.upload_video(
             youtube,
-            {"file": str(video), "title": "title", "desc": "description"},
+            {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
             on_confirmed=fail_persist,
         )
 
@@ -92,7 +92,7 @@ def test_failure_before_first_chunk_is_marked_safe_to_retry(tmp_path):
 
     result = app.upload_video(
         youtube,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         before_upload=fail_intent,
     )
 
@@ -110,7 +110,7 @@ def test_stop_before_upload_does_not_create_youtube_request(tmp_path):
 
     result = app.upload_video(
         youtube,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         stop_event=stop_event,
     )
 
@@ -126,7 +126,7 @@ def test_stop_after_intent_but_before_first_chunk_is_not_marked_unknown(tmp_path
 
     result = app.upload_video(
         youtube,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         stop_event=stop_event,
         before_upload=stop_event.set,
     )
@@ -150,7 +150,7 @@ def test_stop_after_upload_session_starts_marks_result_unknown(tmp_path):
     youtube.request = InterruptedRequest()
     result = app.upload_video(
         youtube,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         stop_event=stop_event,
     )
 

@@ -108,7 +108,7 @@ def test_each_insert_attempt_counts_against_upload_limit(monkeypatch, tmp_path):
     quota = app.QuotaManager(2)
     result = app.upload_video(
         yt,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         retries=3,
         quota_manager=quota,
     )
@@ -145,7 +145,7 @@ def test_channel_upload_limit_does_not_exhaust_project_bucket(monkeypatch, tmp_p
     quota = app.QuotaManager(100)
     result = app.upload_video(
         youtube,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         retries=3,
         quota_manager=quota,
     )

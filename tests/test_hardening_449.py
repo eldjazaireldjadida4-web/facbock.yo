@@ -284,7 +284,7 @@ def test_post_upload_rejection_is_not_reported_as_success(tmp_path: Path, monkey
 
     result = app.upload_video(
         _RejectingYouTube(),
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         on_confirmed=confirm,
     )
 
@@ -337,7 +337,7 @@ def test_stalled_resumable_session_terminates_instead_of_looping(tmp_path: Path,
 
     result = app.upload_video(
         youtube,
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
     )
 
     assert result == app.UPLOAD_RESULT_UNKNOWN

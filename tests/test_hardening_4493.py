@@ -158,7 +158,7 @@ def test_stopping_before_the_first_chunk_refunds_the_quota_slot(tmp_path: Path) 
 
     result = app.upload_video(
         _UnusedYouTube(),
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         quota_manager=quota,
         stop_event=stop_event,
     )

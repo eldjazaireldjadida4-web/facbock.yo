@@ -22,7 +22,7 @@ def test_public_upload_is_blocked_before_quota_or_api(tmp_path):
     quota = Quota()
     result = app.upload_video(
         YouTube(),
-        {"file": str(video), "title": "title", "desc": "description"},
+        {"file": str(video), "title": "عنوان اختبار واضح", "desc": "description"},
         privacy="public",
         quota_manager=quota,
     )
@@ -38,7 +38,7 @@ def test_explicit_publication_approval_passes_final_guard(tmp_path):
 
     result = app.upload_video(
         YouTube(),
-        {"file": str(tmp_path / "missing.mp4"), "title": "title", "desc": "description"},
+        {"file": str(tmp_path / "missing.mp4"), "title": "عنوان اختبار واضح", "desc": "description"},
         privacy="public",
         publication_approved=True,
     )
@@ -53,7 +53,7 @@ def test_explicit_automation_opt_in_passes_final_guard(tmp_path):
 
     result = app.upload_video(
         YouTube(),
-        {"file": str(tmp_path / "missing.mp4"), "title": "title", "desc": "description"},
+        {"file": str(tmp_path / "missing.mp4"), "title": "عنوان اختبار واضح", "desc": "description"},
         privacy="unlisted",
         allow_public_automation=True,
     )
