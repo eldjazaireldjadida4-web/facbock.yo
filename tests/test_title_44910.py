@@ -177,3 +177,132 @@ def test_cycle_queues_instead_of_uploading_a_placeholder_title(monkeypatch, tmp_
     queued = app.load_failed_queue()
     assert queued and queued[0]["last_error"] == "facebook_title_missing"
     assert queued[0]["id"] == "777"
+
+
+# ─────────────────────────── العنوان المعتمد من المشغّل ───────────────────────────
+def _bare_cycle_worker():
+    import queue
+    import threading
+
+    worker = app.App.__new__(app.App)
+    worker._stop = threading.Event()
+    worker._uiq = queue.Queue()
+    worker._watching = False
+    worker._thread = None
+    worker.stats = {}
+    worker._log = lambda *_a, **_k: None
+    worker._emit_page_status = lambda *_a, **_k: None
+    worker._safe_quit_driver = lambda *_a, **_k: None
+    worker._history_page_index = lambda: {}
+    worker._make_shorts_from = lambda *_a, **_k: None
+    worker._cleanup_file = lambda *_a, **_k: None
+    return worker
+
+
+def _cycle_settings(**overrides):
+    settings = app.build_cli_settings(configparser.ConfigParser(interpolation=None))
+    settings.update({
+        "account": "acc", "fast_scrape": True, "facebook_network_preflight": False,
+        "cookies_enabled": False, "dedupe_content": False, "review_before_upload": True,
+        "content_review_enabled": False, "ai_enabled": False, "thumbnail_enabled": False,
+        "auto_shorts": False, "shorts_cut_enabled": False, "logo_enabled": False,
+        "delete_after_upload": False, "schedule_enabled": False, "dry_run": False,
+        "rights_gate_mode": "operator_confirmed", "rights_operator_basis": "owned",
+        "rights_operator_statement": "أقر بأنني مالك المادة وأملك حق إعادة نشرها على قناتي.",
+        "rights_operator_evidence": "https://example.test/evidence",
+        "min_duration": 0, "max_duration": 0, "between_videos": 0,
+        "title_optimize": False, "preserve_facebook_title": False,
+    })
+    settings.update(overrides)
+    return settings
+
+
+def _cycle_context():
+    return {"yt": object(), "account": "acc",
+            "quota": type("Q", (), {"used": 0, "daily_limit": 6,
+                                    "can_afford": lambda *a: True,
+                                    "register": lambda *a: None,
+                                    "mark_exhausted": lambda self=None: None})()}
+
+
+def _prepare_cycle_env(monkeypatch, tmp_path, source_title):
+    for name in ("STATE_FILE", "FAILED_QUEUE_FILE", "UPLOADED_IDS_FILE", "SEEN_IDS_FILE",
+                 "UPLOAD_RECEIPTS_FILE", "UPLOAD_RECEIPTS_ARCHIVE_FILE", "HISTORY_FILE",
+                 "RIGHTS_MANIFEST_FILE", "STATS_FILE", "PAGE_STATUS_FILE", "CHANNEL_INDEX_FILE",
+                 "AI_KEYS_FILE", "PAGES_FILE", "ACCOUNTS_FILE"):
+        monkeypatch.setattr(app, name, str(tmp_path / f"{name.lower()}.json"), raising=False)
+    monkeypatch.setattr(app, "_RECEIPTS_COMPACTED", True)
+    monkeypatch.setattr(app, "disk_free_gb", lambda: 100.0)
+    monkeypatch.setattr(app, "collect_video_stats", lambda *_a, **_k: None)
+    monkeypatch.setattr(app, "send_cycle_summary", lambda *_a, **_k: None)
+    monkeypatch.setattr(app, "create_thumbnail_preview", lambda *_a: (None, None))
+
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"video")
+    monkeypatch.setattr(app, "scrape_links_fast", lambda *_a, **_k: ["https://www.facebook.com/reel/555"])
+    monkeypatch.setattr(app, "download_video", lambda url, page, *_a, **_k: {
+        "file": str(clip), "title": source_title, "desc": "وصف", "duration": 120,
+        "source_page": page, "source_url": url, "title_generic": False,
+    })
+    monkeypatch.setattr(app, "validate_media", lambda *_a, **_k: (True, {}))
+    monkeypatch.setattr(app, "finalize_video", lambda path, _log=None: path)
+    return clip
+
+
+def test_reviewed_title_is_used_verbatim_not_reoptimized(monkeypatch, tmp_path) -> None:
+    _prepare_cycle_env(monkeypatch, tmp_path, source_title="الوطنية TV")
+    uploaded = {}
+    seen_payload = {}
+
+    def fake_review(_queue, _stop, payload, *_a, **_k):
+        seen_payload["title"] = payload["title"]
+        return {
+            "action": "approve",
+            "title": "الوطنية TV",           # عنوان كتبه المشغّل بنفسه
+            "description": "وصف معتمد",
+            "privacy": "private",
+        }
+
+    monkeypatch.setattr(app, "wait_for_review_decision", fake_review)
+
+    def fake_upload(_youtube, data, *_a, **kwargs):
+        uploaded["title"] = data["title"]
+        kwargs["on_confirmed"]("abcdefghijk")
+        return "abcdefghijk"
+
+    monkeypatch.setattr(app, "upload_video", fake_upload)
+
+    pages = [{"url": "https://www.facebook.com/SomePage", "name": "الوطنية TV",
+              "limit": 10, "scroll": 2}]
+    app.App._run_cycle(_bare_cycle_worker(), _cycle_context(), pages, _cycle_settings(), False)
+
+    # الحقل الفارغ يعني أن المشغّل كتب عنواناً فعلاً، لا أنه وافق على بديل
+    assert seen_payload["title"] == ""
+    assert uploaded["title"] == "الوطنية TV"
+
+
+def test_review_window_prefills_a_real_hint_instead_of_a_placeholder(monkeypatch, tmp_path) -> None:
+    _prepare_cycle_env(monkeypatch, tmp_path, source_title="الوطنية TV")
+    app.save_failed_queue([{
+        "id": "555",
+        "url": "https://www.facebook.com/reel/555",
+        "page": "الوطنية TV",
+        "attempts": 1,
+        "last_error": "facebook_title_missing",
+        "upload_title": "",
+        "title_hint": "هدف قاتل في الوقت بدل الضائع",
+    }])
+    seen = {}
+
+    def fake_review(_queue, _stop, payload, *_a, **_k):
+        seen["title"] = payload["title"]
+        return {"action": "skip"}
+
+    monkeypatch.setattr(app, "wait_for_review_decision", fake_review)
+    monkeypatch.setattr(app, "scrape_links_fast", lambda *_a, **_k: [])
+
+    pages = [{"url": "https://www.facebook.com/SomePage", "name": "الوطنية TV",
+              "limit": 10, "scroll": 2}]
+    app.App._run_cycle(_bare_cycle_worker(), _cycle_context(), pages, _cycle_settings(), False)
+
+    assert seen["title"] == "هدف قاتل في الوقت بدل الضائع"

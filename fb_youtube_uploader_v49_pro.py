@@ -145,7 +145,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.10"
+__version__ = "4.49.11"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -8105,8 +8105,21 @@ class App:
             item_privacy = settings.get("privacy", "private")
             publication_approved = False
             if review_before_upload:
+                suggested_title = str(video_data.get("title") or "")
+                if not suggested_title or video_data.get("title_missing"):
+                    # تلميح بطاقة فيسبوك غالباً عنوان حقيقي؛ عرضه أفضل من
+                    # حقل فارغ، مع رفض البدائل العامة.
+                    hint = str(item.get("title_hint") or "").strip()
+                    if hint:
+                        candidate = _prepare_facebook_title(
+                            hint, source_names, settings["remove_tags"],
+                            settings.get("omit_source_page_name", True),
+                            preserve_facebook_title,
+                        )
+                        if candidate and not is_generic_title(candidate):
+                            suggested_title = candidate
                 review_payload = {
-                    "title": video_data.get("title", ""),
+                    "title": suggested_title,
                     "description": video_data.get("desc", ""),
                     "title_missing": bool(video_data.get("title_missing")),
                     "privacy": item_privacy,
@@ -8132,12 +8145,11 @@ class App:
 
                 action = decision.get("action")
                 if action == "approve":
-                    video_data["title"] = _prepare_facebook_title(
-                        decision["title"],
-                        source_names,
-                        settings["remove_tags"],
-                        settings.get("omit_source_page_name", True),
-                        preserve_facebook_title,
+                    # ما يكتبه المشغّل ويوافق عليه هو العنوان النهائي. تمريره
+                    # مرة أخرى على مسار التحسين كان يحذف اسم الصفحة/كلمات
+                    # الحشو من عنوان مقصود، وقد يعيده إلى «مقطع فيديو».
+                    video_data["title"] = normalize_youtube_title(
+                        str(decision.get("title", ""))
                     )
                     video_data["title_missing"] = False
                     video_data["desc"] = ensure_source_attribution(
