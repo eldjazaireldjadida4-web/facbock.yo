@@ -86,9 +86,12 @@ def test_youtube_oauth_token_is_loaded_from_app_directory(monkeypatch, tmp_path)
     working_dir = tmp_path / "outside"
     app_dir.mkdir()
     working_dir.mkdir()
-    token_path = app_dir / "channel1_token.json"
-    token_path.write_text(json.dumps({"scopes": app.SCOPES}), encoding="utf-8")
+    legacy_token_path = app_dir / "channel1_token.json"
+    legacy_token_path.write_text(json.dumps({"scopes": app.SCOPES}), encoding="utf-8")
+    accounts_path = app_dir / "accounts.json"
+    accounts_path.write_text(json.dumps(["channel1"]), encoding="utf-8")
     monkeypatch.setattr(app, "APP_DIRECTORY", str(app_dir))
+    monkeypatch.setattr(app, "ACCOUNTS_FILE", str(accounts_path))
     monkeypatch.chdir(working_dir)
     loaded_paths = []
 
@@ -107,7 +110,42 @@ def test_youtube_oauth_token_is_loaded_from_app_directory(monkeypatch, tmp_path)
     service, error = app.get_youtube("channel1", allow_interactive=False)
 
     assert (service, error) == ("youtube-service", None)
+    token_path = Path(app._youtube_token_paths("channel1")[0])
     assert loaded_paths == [str(token_path)]
+    assert token_path.is_file()
+    assert not legacy_token_path.exists()
+
+
+def test_youtube_token_paths_do_not_collide_for_sanitized_account_names():
+    first, first_legacy, _ = app._youtube_token_paths("channel/one")
+    second, second_legacy, _ = app._youtube_token_paths("channel?one")
+
+    assert first != second
+    assert first_legacy == second_legacy
+
+
+def test_ambiguous_legacy_youtube_token_is_never_loaded(monkeypatch, tmp_path):
+    app_dir = tmp_path / "application"
+    app_dir.mkdir()
+    accounts_path = app_dir / "accounts.json"
+    accounts_path.write_text(json.dumps(["channel/one", "channel?one"]), encoding="utf-8")
+    monkeypatch.setattr(app, "APP_DIRECTORY", str(app_dir))
+    monkeypatch.setattr(app, "ACCOUNTS_FILE", str(accounts_path))
+    _current_path, legacy_path, _slug = app._youtube_token_paths("channel/one")
+    Path(legacy_path).write_text(json.dumps({"scopes": app.SCOPES}), encoding="utf-8")
+    loaded = []
+    monkeypatch.setattr(
+        app.Credentials,
+        "from_authorized_user_file",
+        lambda *args, **kwargs: loaded.append((args, kwargs)),
+    )
+
+    service, error = app.get_youtube("channel/one", allow_interactive=False)
+
+    assert service is None
+    assert "أكثر من حساب" in error
+    assert loaded == []
+    assert Path(legacy_path).is_file()
 
 
 @pytest.mark.parametrize("allow_interactive", [True, False])

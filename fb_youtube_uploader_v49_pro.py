@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.48.11 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.12 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -23,6 +23,7 @@ import argparse
 import time, os, re, json, logging, random, threading, queue, configparser, shutil, hashlib, unicodedata, math
 import subprocess, sys, tempfile
 import html as html_module
+import http.cookiejar
 import urllib.error, urllib.request
 from urllib.parse import urlparse
 import glob
@@ -145,7 +146,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.11"
+__version__ = "4.49.12"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1478,6 +1479,20 @@ def sanitize_account_name(name):
     return safe or "account1"
 
 
+def _youtube_token_paths(account_name):
+    """يعطي كل اسم حساب مسار token مستقلاً مع إبقاء مسار التوافق القديم."""
+    identity = str(account_name or "").strip()
+    if not identity:
+        raise ValueError("يجب تحديد اسم حساب YouTube قبل تحميل OAuth.")
+    slug = sanitize_account_name(identity)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    current_slug = slug[:48].strip("._") or "account1"
+    return (
+        _app_path(f"{current_slug}_{digest}_token.json"),
+        _app_path(f"{slug}_token.json"),
+        slug,
+    )
+
 
 def _backoff_seconds(attempt):
     """تراجع أسّي مع رجّة عشوائية (8 → 24 → 72… بحد 300 ثانية)."""
@@ -2006,9 +2021,31 @@ def scrape_links_fast(page_url, limit, log_cb=None, cookies_file=None):
 
 def get_youtube(account_name, secrets_file=None, allow_interactive=True):
     sf = _app_path(secrets_file or CLIENT_SECRETS_FILE)
-    token_file = _app_path(f"{sanitize_account_name(account_name)}_token.json")
-    if os.path.islink(sf) or os.path.islink(token_file):
+    try:
+        token_file, legacy_token_file, account_slug = _youtube_token_paths(account_name)
+    except ValueError as error:
+        return None, str(error)
+    if any(os.path.islink(path) for path in (sf, token_file, legacy_token_file)):
         return None, "مسار OAuth أو ملف token رابط رمزي؛ اختر ملفاً محلياً عادياً في الإعدادات المتقدمة."
+    if not os.path.exists(token_file) and os.path.isfile(legacy_token_file):
+        try:
+            configured = load_accounts()
+        except Exception as error:
+            logging.warning("تعذر تحديد ملكية ملف OAuth القديم: %s", redact_sensitive_text(error))
+            return None, "تعذر التحقق بأمان من ملكية ملف OAuth القديم؛ أصلح accounts.json قبل تسجيل الدخول."
+        matches = [name for name in configured if sanitize_account_name(name) == account_slug]
+        identity = str(account_name or "").strip()
+        if matches and (len(matches) != 1 or str(matches[0]).strip() != identity):
+            return None, (
+                "يوجد ملف OAuth قديم باسم يتطابق مع أكثر من حساب؛ لم أستخدمه لمنع الدخول إلى قناة خاطئة. "
+                "أعد تفويض كل حساب من الواجهة للتحويل إلى ملفات منفصلة."
+            )
+        try:
+            os.replace(legacy_token_file, token_file)
+            _harden_secret_file(token_file)
+        except OSError as error:
+            logging.warning("تعذر نقل ملف OAuth القديم بأمان: %s", redact_sensitive_text(error))
+            return None, "تعذر نقل ملف OAuth القديم إلى مساره المنفصل؛ تحقق من أذونات مجلد التطبيق."
     if os.path.isfile(sf):
         _harden_secret_file(sf)
     creds = None
@@ -2196,7 +2233,7 @@ def _cleanup_promoted_download(path, output_dir):
         logging.warning("تعذر تنظيف تنزيل مرحلي غير مكتمل: %s", redact_sensitive_text(error))
 
 
-def _facebook_watch_og_title(url, timeout=20):
+def _facebook_watch_og_title(url, timeout=20, ydl_opts=None):
     """يجلب og:title من صفحة مشاهدة فيسبوك دون تسجيل.
     صفحات Watch/Reel تقدّم العنوان الحقيقي لزوّار externalhit حتى عندما يعيد
     yt-dlp عنواناً عاماً؛ هذه أضمن مصدر للعنوان الأصلي. يعيد نصاً أو فراغاً."""
@@ -2208,7 +2245,30 @@ def _facebook_watch_og_title(url, timeout=20):
             target,
             headers={"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        options = ydl_opts if isinstance(ydl_opts, dict) else {}
+        handlers = []
+        proxy = str(options.get("proxy") or "").strip()
+        if proxy:
+            handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        cookie_path = str(options.get("cookiefile") or "").strip()
+        if cookie_path:
+            if os.path.islink(cookie_path) or not os.path.isfile(cookie_path):
+                logging.info("ملف cookies غير متاح لاستعادة عنوان Facebook؛ لن يُرسل طلب مباشر بديل.")
+                return ""
+            cookie_jar = http.cookiejar.MozillaCookieJar()
+            try:
+                cookie_jar.load(cookie_path, ignore_discard=True, ignore_expires=False)
+            except (OSError, ValueError, http.cookiejar.LoadError) as error:
+                logging.info("تعذر تحميل cookies لاستعادة عنوان Facebook: %s", redact_sensitive_text(error))
+                return ""
+            handlers.append(urllib.request.HTTPCookieProcessor(cookie_jar))
+        opener = urllib.request.build_opener(*handlers) if handlers else None
+        response_context = (
+            opener.open(request, timeout=timeout)
+            if opener is not None
+            else urllib.request.urlopen(request, timeout=timeout)
+        )
+        with response_context as response:
             page = response.read(524288).decode("utf-8", "replace")
     except (OSError, ValueError, urllib.error.URLError) as error:
         logging.info("تعذر جلب og:title من صفحة Facebook: %s", redact_sensitive_text(error))
@@ -2240,7 +2300,10 @@ def _refetch_facebook_title(download_url, source_names, remove_tags, omit_source
     """عندما يعيد فيسبوك عنواناً عاماً («Video» أو «Facebook Live») نعيد جلب البيانات فقط
     مرة واحدة بحد مهلة أطول؛ وإن بقي العنوان عاماً بنينا عنواناً وصفياً من اسم الصفحة
     والوقت بدل رفع «Video» حرفياً إلى يوتيوب. يعيد (العنوان، هل هو عنوان بديل)."""
-    og_candidate = _facebook_watch_og_title(download_url)
+    if isinstance(ydl_opts, dict) and (ydl_opts.get("proxy") or ydl_opts.get("cookiefile")):
+        og_candidate = _facebook_watch_og_title(download_url, ydl_opts=ydl_opts)
+    else:
+        og_candidate = _facebook_watch_og_title(download_url)
     if og_candidate:
         candidate = _prepare_facebook_title(
             og_candidate, source_names, remove_tags,
@@ -6594,6 +6657,19 @@ class App:
         tk.Label(top, text=f"الصفحة: {payload.get('page') or 'غير محددة'}  •  "
                            f"المدة: {int(payload.get('duration') or 0)} ثانية",
                  bg=PANEL, fg=TXT2, font=FSM).pack(anchor="e", pady=(4, 0))
+        review_tags = payload.get("tags") or []
+        if isinstance(review_tags, str):
+            review_tags = [review_tags]
+        review_tags_text = "، ".join(str(tag).strip() for tag in review_tags if str(tag).strip())
+        tk.Label(
+            top,
+            text="وسوم YouTube التي ستُرسل: " + (review_tags_text or "لا توجد"),
+            bg=PANEL,
+            fg=TXT2,
+            font=FSM,
+            justify="right",
+            wraplength=width - 48,
+        ).pack(anchor="e", pady=(4, 0))
         duplicate_matches = payload.get("duplicate_matches", [])
         channel_index_warning = payload.get("channel_index_warning", "")
         rights_manifest_warning = payload.get("rights_manifest_warning", "")
@@ -8128,6 +8204,7 @@ class App:
                     "scheduled": bool(settings.get("schedule_enabled")),
                     "thumbnail_path": thumbnail_path,
                     "thumbnail_base_path": thumbnail_base_path,
+                    "tags": list(eff_tags),
                     "duplicate_matches": video_data.get("duplicate_matches", []),
                     "channel_index_warning": channel_index_warning,
                     "rights_record": rights_record,
@@ -8148,9 +8225,10 @@ class App:
                     # ما يكتبه المشغّل ويوافق عليه هو العنوان النهائي. تمريره
                     # مرة أخرى على مسار التحسين كان يحذف اسم الصفحة/كلمات
                     # الحشو من عنوان مقصود، وقد يعيده إلى «مقطع فيديو».
-                    video_data["title"] = normalize_youtube_title(
-                        str(decision.get("title", ""))
-                    )
+                    video_data["title"] = str(decision.get("title", "")).strip()
+                    # لا نعيد تنظيف العنوان بعد أن وافق عليه المشغّل. يرفض
+                    # upload_video المحارف غير الصالحة بدلاً من تغيير العنوان بصمت.
+                    video_data["preserve_facebook_title"] = True
                     video_data["title_missing"] = False
                     video_data["desc"] = ensure_source_attribution(
                         decision["description"], source_page, source_url
@@ -8728,7 +8806,9 @@ class App:
             configured_tags = settings.get("tags") or []
             if isinstance(configured_tags, str):
                 configured_tags = [configured_tags]
-            shorts_tags = list(dict.fromkeys(list(configured_tags) + ["Shorts"]))
+            shorts_tags = normalize_youtube_tags(
+                list(dict.fromkeys(list(configured_tags) + ["Shorts"])), self._log
+            )
             review_report = None
             if settings.get("content_review_enabled"):
                 review_report, review_status = run_policy_review(
@@ -8762,6 +8842,7 @@ class App:
                     "scheduled": bool(settings.get("schedule_enabled")),
                     "thumbnail_path": thumbnail_path,
                     "thumbnail_base_path": thumbnail_base_path,
+                    "tags": list(shorts_tags),
                     "duplicate_matches": video_data.get("duplicate_matches", []),
                     "channel_index_warning": "",
                     "rights_record": rights_record,
@@ -8777,11 +8858,13 @@ class App:
                     record("operator_skipped", "لم يوافق المشغل على رفع Shorts.")
                     return
                 decided_title = str(decision.get("title", ""))
-                clip_data["title"] = (
-                    preserve_source_title(decided_title)
-                    if preserve_facebook_title else decided_title.strip()
+                clip_data["title"] = decided_title.strip()
+                clip_data["preserve_facebook_title"] = True
+                clip_data["desc"] = ensure_source_attribution(
+                    str(decision.get("description", "")).strip(),
+                    video_data.get("source_page") or item.get("page", ""),
+                    video_data.get("source_url") or item.get("url", ""),
                 )
-                clip_data["desc"] = str(decision.get("description", "")).strip()
                 selected_privacy = decision.get("privacy", "private")
                 thumbnail_upload_path = decision.get("thumbnail_path")
                 clip_data["thumbnail"] = thumbnail_upload_path
@@ -8844,7 +8927,6 @@ class App:
                 self._log(reason)
                 record("invalid_description", reason, title=clip_data["title"])
                 return
-            shorts_tags = normalize_youtube_tags(shorts_tags, self._log)
             # يُحفظ تحت معرّف Shorts المستقل، وبعد اجتياز كل البوابات: كان
             # يُكتب تحت معرّف الأصل فيستبدل إقرار فيديو منشور، وقبل رفض محتمل.
             if rights_record is not None:

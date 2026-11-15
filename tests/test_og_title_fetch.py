@@ -66,6 +66,78 @@ def test_og_title_returns_empty_on_network_error(monkeypatch):
     assert app._facebook_watch_og_title("https://www.facebook.com/watch/?v=123") == ""
 
 
+def test_og_title_uses_configured_proxy_and_facebook_cookies(monkeypatch, tmp_path):
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text(
+        "# Netscape HTTP Cookie File\n"
+        ".facebook.com\tTRUE\t/\tTRUE\t4102444800\tc_user\ttest-user\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            return _FakeResponse(OG_PAGE)
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+        return FakeOpener()
+
+    monkeypatch.setattr(app.urllib.request, "build_opener", fake_build_opener)
+    monkeypatch.setattr(
+        app.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("must not bypass configured proxy/cookies"),
+    )
+
+    result = app._facebook_watch_og_title(
+        "https://www.facebook.com/watch/?v=123",
+        ydl_opts={"proxy": "http://proxy.example:8080", "cookiefile": str(cookies)},
+    )
+
+    proxy_handler = next(
+        handler for handler in captured["handlers"]
+        if isinstance(handler, app.urllib.request.ProxyHandler)
+    )
+    cookie_handler = next(
+        handler for handler in captured["handlers"]
+        if isinstance(handler, app.urllib.request.HTTPCookieProcessor)
+    )
+    assert result == REAL_TITLE
+    assert proxy_handler.proxies["https"] == "http://proxy.example:8080"
+    assert any(cookie.name == "c_user" and cookie.value == "test-user" for cookie in cookie_handler.cookiejar)
+    assert captured["url"] == "https://www.facebook.com/watch/?v=123"
+
+
+def test_refetch_passes_download_transport_options_to_og_title(monkeypatch):
+    captured = {}
+
+    def fake_title(url, timeout=20, ydl_opts=None):
+        captured.update(url=url, ydl_opts=ydl_opts)
+        return REAL_TITLE
+
+    monkeypatch.setattr(app, "_facebook_watch_og_title", fake_title)
+    monkeypatch.setattr(
+        app.yt_dlp,
+        "YoutubeDL",
+        lambda *_args, **_kwargs: pytest.fail("yt-dlp must not run for a valid og:title"),
+    )
+    options = {"proxy": "http://proxy.example:8080", "cookiefile": "/private/cookies.txt"}
+
+    title, generic = app._refetch_facebook_title(
+        "https://www.facebook.com/watch/?v=123", ["Page"], False, True, options
+    )
+
+    assert not generic
+    assert title
+    assert captured == {
+        "url": "https://www.facebook.com/watch/?v=123",
+        "ydl_opts": options,
+    }
+
+
 def test_refetch_prefers_og_title_over_ytdlp(monkeypatch):
     monkeypatch.setattr(
         app, "_facebook_watch_og_title",

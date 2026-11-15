@@ -315,14 +315,29 @@ def test_channel_index_failure_returns_failure_and_requeues_source(review_cycle,
 
 def test_approval_applies_edits_and_uploads_matching_thumbnail(review_cycle, monkeypatch):
     captured = {}
-    monkeypatch.setattr(app, "wait_for_review_decision", lambda _queue, _stop, payload: {
-        "action": "approve", "title": "Approved title | Page", "description": "Approved description",
-        "privacy": "unlisted", "thumbnail_path": payload["thumbnail_path"],
-    })
+    reviewed = []
 
-    def upload(_youtube, video_data, privacy, *_args, **_kwargs):
+    def approve(_queue, _stop, payload):
+        reviewed.append(payload)
+        return {
+            "action": "approve",
+            "title": "Approved title https://example.test/story",
+            "description": "Approved description",
+            "privacy": "unlisted",
+            "thumbnail_path": payload["thumbnail_path"],
+        }
+
+    monkeypatch.setattr(app, "wait_for_review_decision", approve)
+
+    def upload(_youtube, video_data, privacy, _playlist, tags, *_args, **_kwargs):
         assert review_cycle["saved_rights"]
-        captured.update(title=video_data["title"], description=video_data["desc"], privacy=privacy)
+        captured.update(
+            title=video_data["title"],
+            description=video_data["desc"],
+            privacy=privacy,
+            tags=list(tags),
+            preserve=video_data["preserve_facebook_title"],
+        )
         return "abcdefghijk"
 
     monkeypatch.setattr(app, "upload_video", upload)
@@ -331,14 +346,90 @@ def test_approval_applies_edits_and_uploads_matching_thumbnail(review_cycle, mon
     )
 
     assert result == (1, 0)
-    assert captured["title"] == "Approved title | Page"
+    assert captured["title"] == "Approved title https://example.test/story"
+    assert captured["preserve"] is True
     assert captured["description"].startswith("Approved description")
     assert "المصدر الأصلي: Page" in captured["description"]
     assert "https://www.facebook.com/reel/reel-1" in captured["description"]
     assert captured["privacy"] == "unlisted"
+    assert reviewed[0]["tags"] == captured["tags"] == ["Facebook"]
     assert review_cycle["thumbnail_uploads"][0][2] == "approved-preview.png"
     assert review_cycle["uploaded_ids"] == ["reel-1"]
     assert set(review_cycle["thumbnail_cleanup"]) == {"base-preview.png", "approved-preview.png"}
+
+
+def test_shorts_review_keeps_source_attribution_and_shows_final_tags(review_cycle, monkeypatch, tmp_path):
+    source = tmp_path / "shorts-source.mp4"
+    clip = tmp_path / "shorts-clip.mp4"
+    source.write_bytes(b"source-video")
+    clip.write_bytes(b"shorts-video")
+    settings = review_cycle["settings"]
+    settings.update({
+        "review_before_upload": True,
+        "thumbnail_enabled": False,
+        "content_review_enabled": False,
+        "schedule_enabled": False,
+        "tags": ["Facebook", "Reel"],
+        "privacy": "private",
+    })
+    rights = app.new_rights_record(
+        rights_basis="owned",
+        original_contribution="تحليل أصلي يضيف معلومات وسياقاً جديداً للمشاهد.",
+        attested=True,
+    )
+    monkeypatch.setattr(app, "get_rights_record", lambda *_args: dict(rights))
+    monkeypatch.setattr(app, "rights_record_errors", lambda *_args: [])
+    monkeypatch.setattr(app, "_audio_rms_per_second", lambda *_args: [1.0] * 120)
+    monkeypatch.setattr(app, "find_hot_segment", lambda *_args, **_kwargs: (5, 30))
+    monkeypatch.setattr(app, "cut_shorts_clip", lambda *_args, **_kwargs: str(clip))
+    monkeypatch.setattr(app, "validate_media", lambda *_args, **_kwargs: (True, {"duration": 30}))
+    monkeypatch.setattr(app, "persist_upload_receipt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app, "send_telegram", lambda *_args, **_kwargs: None)
+    reviewed = []
+
+    def approve(_queue, _stop, payload):
+        reviewed.append(payload)
+        return {
+            "action": "approve",
+            "title": "Approved Shorts",
+            "description": "Operator-edited Shorts description",
+            "privacy": "private",
+            "rights_record": rights,
+        }
+
+    monkeypatch.setattr(app, "wait_for_review_decision", approve)
+    uploaded = {}
+
+    def upload(_youtube, data, _privacy, _playlist, tags, *_args, **_kwargs):
+        uploaded.update(description=data["desc"], tags=list(tags), title=data["title"])
+        return "abcdefghijk"
+
+    monkeypatch.setattr(app, "upload_video", upload)
+    item = {
+        "id": "reel-1",
+        "url": "https://www.facebook.com/reel/reel-1",
+        "page": "Page",
+    }
+    video = {
+        "file": str(source),
+        "title": "Original source title",
+        "desc": "Original description",
+        "duration": 120,
+        "source_page": "Page",
+        "source_url": item["url"],
+        "preserve_facebook_title": True,
+    }
+
+    review_cycle["worker"]._make_shorts_from(
+        review_cycle["context"], settings, item, video, set()
+    )
+
+    assert reviewed[0]["tags"] == ["Facebook", "Reel", "Shorts"]
+    assert uploaded["tags"] == reviewed[0]["tags"]
+    assert uploaded["title"] == "Approved Shorts"
+    assert uploaded["description"].startswith("Operator-edited Shorts description")
+    assert "المصدر الأصلي: Page" in uploaded["description"]
+    assert item["url"] in uploaded["description"]
 
 
 def test_manual_skip_marks_seen_without_upload(review_cycle, monkeypatch):
