@@ -148,6 +148,61 @@ def test_ambiguous_legacy_youtube_token_is_never_loaded(monkeypatch, tmp_path):
     assert Path(legacy_path).is_file()
 
 
+def test_ambiguous_legacy_token_can_be_reauthorized_interactively(monkeypatch, tmp_path):
+    app_dir = tmp_path / "application"
+    app_dir.mkdir()
+    secrets_path = app_dir / "client_secrets.json"
+    secrets_path.write_text("{}", encoding="utf-8")
+    accounts_path = app_dir / "accounts.json"
+    accounts_path.write_text(json.dumps(["channel/one", "channel?one"]), encoding="utf-8")
+    monkeypatch.setattr(app, "APP_DIRECTORY", str(app_dir))
+    monkeypatch.setattr(app, "ACCOUNTS_FILE", str(accounts_path))
+    token_path, legacy_path, _slug = app._youtube_token_paths("channel/one")
+    Path(legacy_path).write_text(json.dumps({"scopes": app.SCOPES}), encoding="utf-8")
+    loaded = []
+    monkeypatch.setattr(
+        app.Credentials,
+        "from_authorized_user_file",
+        lambda *args, **kwargs: loaded.append((args, kwargs)),
+    )
+
+    class FreshCredentials:
+        valid = True
+        expired = False
+        refresh_token = "refresh-token"
+
+        def to_json(self):
+            return json.dumps({
+                "scopes": app.SCOPES,
+                "token": "fresh-token",
+                "refresh_token": self.refresh_token,
+            })
+
+    flow_calls = []
+
+    class Flow:
+        def run_local_server(self, port=0):
+            flow_calls.append(port)
+            return FreshCredentials()
+
+    monkeypatch.setattr(
+        app.InstalledAppFlow,
+        "from_client_secrets_file",
+        lambda *_args, **_kwargs: Flow(),
+    )
+    monkeypatch.setattr(app, "build", lambda *_args, **_kwargs: "youtube-service")
+
+    service, error = app.get_youtube(
+        "channel/one", secrets_file=str(secrets_path), allow_interactive=True
+    )
+
+    assert (service, error) == ("youtube-service", None)
+    assert flow_calls == [0]
+    assert loaded == []
+    assert Path(token_path).is_file()
+    assert Path(legacy_path).is_file()
+
+
 @pytest.mark.parametrize("allow_interactive", [True, False])
 def test_expired_youtube_token_without_refresh_token_is_reauthorized_safely(
     monkeypatch, tmp_path, allow_interactive

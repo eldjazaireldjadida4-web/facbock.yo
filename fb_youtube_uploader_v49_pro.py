@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.12 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.13 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -146,7 +146,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.12"
+__version__ = "4.49.13"
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -2035,17 +2035,24 @@ def get_youtube(account_name, secrets_file=None, allow_interactive=True):
             return None, "تعذر التحقق بأمان من ملكية ملف OAuth القديم؛ أصلح accounts.json قبل تسجيل الدخول."
         matches = [name for name in configured if sanitize_account_name(name) == account_slug]
         identity = str(account_name or "").strip()
-        if matches and (len(matches) != 1 or str(matches[0]).strip() != identity):
-            return None, (
+        ambiguous_legacy = bool(
+            matches and (len(matches) != 1 or str(matches[0]).strip() != identity)
+        )
+        if ambiguous_legacy:
+            message = (
                 "يوجد ملف OAuth قديم باسم يتطابق مع أكثر من حساب؛ لم أستخدمه لمنع الدخول إلى قناة خاطئة. "
                 "أعد تفويض كل حساب من الواجهة للتحويل إلى ملفات منفصلة."
             )
-        try:
-            os.replace(legacy_token_file, token_file)
-            _harden_secret_file(token_file)
-        except OSError as error:
-            logging.warning("تعذر نقل ملف OAuth القديم بأمان: %s", redact_sensitive_text(error))
-            return None, "تعذر نقل ملف OAuth القديم إلى مساره المنفصل؛ تحقق من أذونات مجلد التطبيق."
+            logging.warning("%s", message)
+            if not allow_interactive:
+                return None, message
+        else:
+            try:
+                os.replace(legacy_token_file, token_file)
+                _harden_secret_file(token_file)
+            except OSError as error:
+                logging.warning("تعذر نقل ملف OAuth القديم بأمان: %s", redact_sensitive_text(error))
+                return None, "تعذر نقل ملف OAuth القديم إلى مساره المنفصل؛ تحقق من أذونات مجلد التطبيق."
     if os.path.isfile(sf):
         _harden_secret_file(sf)
     creds = None
