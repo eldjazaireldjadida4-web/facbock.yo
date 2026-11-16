@@ -2775,6 +2775,11 @@ def create_logo_badge(logo_path, video_width, video_height, scale_pct=8,
     return badge.resize((badge_width, badge_height), Image.Resampling.LANCZOS)
 
 
+def _ffmpeg_error_detail(stderr):
+    lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    return redact_sensitive_text("\n".join(lines[-4:]))[-500:]
+
+
 def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمين",
                        scale_pct=8, opacity=100, cover_old=True,
                        landscape_cover_width_pct=20, landscape_cover_height_pct=19,
@@ -2856,7 +2861,7 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
                 log_cb(message + "…")
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
         if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
-            detail = redact_sensitive_text((proc.stderr or "").strip())[:300]
+            detail = _ffmpeg_error_detail(proc.stderr)
             logging.warning("ffmpeg logo overlay failed: %s", detail or "no output")
             if log_cb:
                 log_cb(f"فشل تركيب الشعار: {detail or 'لم يُنشأ ملف صالح'}. تحقق من FFmpeg والملف والشعار.")

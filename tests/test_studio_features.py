@@ -212,6 +212,36 @@ def test_overlay_missing_logo_returns_none(tmp_path):
     assert pro49.apply_logo_overlay(str(video), str(tmp_path / "none.png")) is None
 
 
+def test_ffmpeg_error_detail_keeps_failure_tail_and_redacts_secrets():
+    stderr = "ffmpeg version 8.0.1\n" + ("metadata line\n" * 10) + (
+        "access_token=private-token\n"
+        "[AVFilterGraph] No such filter: 'broken'\n"
+        "Conversion failed!\n"
+    )
+    detail = pro49._ffmpeg_error_detail(stderr)
+    assert "ffmpeg version 8.0.1" not in detail
+    assert "No such filter" in detail
+    assert "Conversion failed!" in detail
+    assert "private-token" not in detail
+    assert "[REDACTED]" in detail
+    assert len(detail) <= 500
+
+
+def test_ffmpeg_error_detail_keeps_tail_and_redacts_secrets():
+    stderr = "ffmpeg version 8.0.1\n" + ("metadata line\n" * 10) + (
+        "access_token=private-token\n"
+        "[AVFilterGraph] No such filter: 'broken'\n"
+        "Conversion failed!\n"
+    )
+    detail = pro49._ffmpeg_error_detail(stderr)
+    assert "ffmpeg version 8.0.1" not in detail
+    assert "No such filter" in detail
+    assert "Conversion failed!" in detail
+    assert "private-token" not in detail
+    assert "[REDACTED]" in detail
+    assert len(detail) <= 500
+
+
 # ─────────────────────────────────────────────
 # 5) دورة كاملة: تحسين عنوان + فلتر مدة + تصنيف
 # ─────────────────────────────────────────────
