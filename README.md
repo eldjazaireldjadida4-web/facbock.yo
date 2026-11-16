@@ -4,7 +4,7 @@
 
 أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.13**.
 
-سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يُشغّل الاختبارات و`ruff` و`compileall` تلقائياً عبر GitHub Actions (`.github/workflows/ci.yml`).
+سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.12 عبر GitHub Actions (`.github/workflows/ci.yml`).
 
 ### استعادة OAuth آمنة — 4.49.13
 

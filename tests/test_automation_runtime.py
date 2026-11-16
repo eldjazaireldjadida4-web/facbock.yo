@@ -18,7 +18,9 @@ def test_automation_lock_blocks_a_second_process(tmp_path):
     try:
         with pytest.raises(AutomationAlreadyRunning):
             AutomationRunLock(lock_path).acquire()
-        details = lock_path.read_text(encoding="utf-8")
+        assert first._handle is not None
+        first._handle.seek(0)
+        details = first._handle.read()
         assert "pid=" in details
         assert "started_at=" in details
     finally:

@@ -240,6 +240,7 @@ def test_tilde_cookie_path_is_expanded_for_loading(monkeypatch, tmp_path: Path) 
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
     active, status = facebook_auth._active_facebook_cookies("~/cooks/cookies.txt")
 

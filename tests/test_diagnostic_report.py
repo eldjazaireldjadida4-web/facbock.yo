@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import socket
 from pathlib import Path
@@ -51,8 +52,8 @@ def _write_app_state(root: Path, *, proxy="", queue=None, cookies=True):
 
 def test_error_code_distinguishes_network_failure_types():
     assert report._error_code(socket.timeout()) == "timeout"
-    assert report._error_code(ConnectionRefusedError(111, "refused")) == "connection_refused"
-    assert report._error_code(OSError(101, "unreachable")) == "network_unreachable"
+    assert report._error_code(ConnectionRefusedError(errno.ECONNREFUSED, "refused")) == "connection_refused"
+    assert report._error_code(OSError(errno.ENETUNREACH, "unreachable")) == "network_unreachable"
     assert report._error_code(socket.gaierror(socket.EAI_NONAME, "missing")) == "dns_failure"
 
 
@@ -103,7 +104,7 @@ def test_probe_service_caps_timeouts_and_classifies_refused_connection(monkeypat
             timeouts.append(timeout)
 
         def connect(self, _address):
-            raise ConnectionRefusedError(111, "refused")
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "refused")
 
         def __enter__(self):
             return self

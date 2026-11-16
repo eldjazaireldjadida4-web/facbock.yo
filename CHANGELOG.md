@@ -8,6 +8,8 @@
 - يعرض `doctor.py` أمر تثبيت FFmpeg المناسب على Windows أو Linux/macOS.
 - نُقلت تقارير التحقق التاريخية إلى `docs/validation/` وحُدثت روابطها.
 - أضيف اختبار للرسالة الخاصة بتثبيت FFmpeg على Windows وUnix.
+- يغطي CI الآن Ubuntu وWindows مع Python 3.12، ويفرض `pip check` و`pip-audit` قبل نجاحه.
+- صُححت اختبارات القفل والشبكة وتوسيع مسار `~` لتراعي اختلافات Windows وUnix.
 - التحقق المحلي: `run_tests.sh` نجح مع 671 اختباراً، وتخطّى اختبارين يتطلبان دلالات أذونات POSIX؛ اجتاز `ruff check` و`compileall` و`pip check`.
 - لم يرصد `pip-audit` ثغرات معروفة وقت الفحص، وتوفرت عجلات Windows/Python 3.12 للحزم المقفلة الـ62.
 
