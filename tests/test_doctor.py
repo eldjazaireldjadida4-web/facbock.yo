@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,3 +75,12 @@ def test_main_with_complete_rights_config_reports_strict_gate(hermetic, capsys):
     doctor.main()
     output = capsys.readouterr().out
     assert "strict — المراجعة اليدوية لكل فيديو أو وضع المحاكاة مفعّل" in output
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "expected"),
+    [("nt", "winget install --id Gyan.FFmpeg -e"), ("posix", "sudo apt install ffmpeg")],
+)
+def test_ffmpeg_install_hint_matches_platform(monkeypatch, platform_name, expected):
+    monkeypatch.setattr(doctor, "os", SimpleNamespace(name=platform_name))
+    assert expected in doctor._ffmpeg_install_hint()

@@ -32,6 +32,15 @@ APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 OK, WARN, BAD, INFO = "[OK]", "[تحذير]", "[فشل]", "[معلومة]"
 
 
+def _ffmpeg_install_hint():
+    if os.name == "nt":
+        return (
+            "Windows: شغّل `winget install --id Gyan.FFmpeg -e` في PowerShell، "
+            "ثم أغلق النافذة وأعد فتحها قبل تشغيل doctor مرة أخرى."
+        )
+    return "Linux: sudo apt install ffmpeg. macOS: brew install ffmpeg."
+
+
 def _load_config(app_directory):
     """يقرأ config.ini من مجلد التطبيق ويطبق ترحيل بوابة الحقوق في الذاكرة."""
     config = configparser.ConfigParser(interpolation=None)
@@ -118,13 +127,14 @@ def _collect_checks(add_check, config, config_error, app_directory):
         add_check("ffmpeg", OK, ffmpeg_path)
     else:
         add_check("ffmpeg", WARN, "غير موجود",
-                  "اختياري للتنزيل بصيغة مدمجة؛ ثبّته من ffmpeg.org لميزات الشعار والمعالجة.")
+                  "اختياري للتنزيل بصيغة مدمجة؛ ثبّته لميزات الشعار والمعالجة. " + _ffmpeg_install_hint())
     ffprobe_path = shutil.which("ffprobe")
     if ffprobe_path:
         add_check("ffprobe", OK, ffprobe_path)
     else:
         add_check("ffprobe", BAD, "غير موجود؛ لا يمكن التحقق من الفيديو",
-                  "ثبّت حزمة FFmpeg التي تتضمن ffprobe وأضفها إلى PATH؛ لن يُرفع ملف دون فحص.")
+                  "ثبّت حزمة FFmpeg التي تتضمن ffprobe وأضفها إلى PATH؛ لن يُرفع ملف دون فحص. "
+                  + _ffmpeg_install_hint())
 
     # 6) client_secrets.json
     configured_secrets_file = _config_value("SETTINGS", "CLIENT_SECRETS_FILE", "client_secrets.json")
