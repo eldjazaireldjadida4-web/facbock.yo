@@ -15,11 +15,12 @@ concurrency:
 
 jobs:
   test:
-    name: tests + lint (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: tests + lint (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python: ["3.12"]
 
     steps:
@@ -40,6 +41,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Check dependency consistency
+        run: python -m pip check
+
       - name: Byte-compile every module
         run: python -m compileall -q . -x '(\.venv|\.git)'
 
@@ -50,6 +54,4 @@ jobs:
         run: python -m pytest -q
 
       - name: Dependency audit
-        # معلومة لا بوابة: تنبيه أمني جديد في اعتمادية غير مثبتة لا يمنع الدمج.
-        continue-on-error: true
         run: pip-audit -r requirements-lock.txt --no-deps --disable-pip
