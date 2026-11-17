@@ -16,11 +16,10 @@
 | `texttools.py` | تطبيع العناوين والوسوم والوصف وحدود YouTube |
 | `ai_client.py` | عميل Gemini وتدوير المفاتيح وتنقيح المخرجات |
 | `content_review_bridge.py` | بوابة مراجعة المحتوى وربطها بقرارات المشغّل |
-| `control_plane.py` | فلاتر النشر (`validate_publication_controls`)، استخراج معرف الفيديو، إدارة الإيقاف |
+| `control_plane.py` | فلاتر النشر (`validate_publication_controls`)، استخراج معرف الفيديو، إدارة الإيقاف، دورة حياة الإيصالات (`begin_upload_attempt`، `mark_upload_result_unknown`، `reconcile_upload_result`) — إيصالات الرفع (`load_upload_receipts`/`compact_upload_receipts`/`save_upload_receipts` و`UPLOAD_RECEIPTS_FILE`) تبقى في الملف الرئيسي لأن اختباراتها تخترق ثوابت المسارات على `app` |
 | `facebook_scraper.py` | جلب روابط Reels ومسار الشبكة إلى فيسبوك |
 | `fburls.py` | تطبيع روابط صفحات وقنوات فيسبوك |
 | `uploaderrors.py` | تصنيف أخطاء الرفع (`classify_upload_error`، `_http_status`...) |
-| `upload_receipts.py` | إيصالات الرفع وأرشفتها |
 | `file_security.py` | `restrict_file_permissions`، `open_private_append` |
 | `safe_logging.py` | سجلات دوّارة مع تنقيح الأسرار (`redact_sensitive_text`) || `version.py` | المصدر الوحيد لرقم الإصدار (`APP_VERSION`)؛ يستورده الملف الرئيسي و`diagnostic_report` |
 | `state_repair/ledger` | إصلاح ملفات الحالة التالفة (`repair_state_files`) يبقى في الملف الرئيسي لأن اختباراته تخترق ثوابت المسارات على `app` |
@@ -28,7 +27,7 @@
 | `notify.py` | إشعارات Telegram الاختيارية |
 | `ai_transcription_cache.py` | ذاكرة التفريغ الصوتي |
 | `settings_validation.py` | التحقق من صحة الإعدادات |
-| `fburls.py` / `pipeline_errors.py` | مساعدات صغيرة (`PipelineFailure`) |
+| `pipeline_errors.py` | استثناء `PipelineFailure` للمسار |
 
 ## قواعد إعادة الهيكلة (مُجرَّبة)
 
@@ -67,10 +66,13 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirement
 
 ## الحالة الحالية
 
-- الإصدار الحالي: **4.49.14** (`2938b33`، إصلاحات مراجعة الكود: منع
-  تعطيل مفتاح Gemini عند 403 صلاحيات، تحذير Windows لمرة واحدة، مصدر وحيد
-  للإصدار، نقل `faster-whisper` إلى متطلبات اختيارية، غلق نافذة جبري). CI
-  أخضر على التكوينات الأربعة.
+- الإصدار الحالي: **4.49.15** (`f0117d5`، إصلاحات المراجعة الثانية: تصنيف
+  `PERMISSION_DENIED` في `ai_client` كرفض صلاحيات لا حصة، تحويل تهميش
+  `chmod` المتكرر إلى ترويسة معيارية `# ruff: noqa: E402`, سطر إصدار من
+  `version.py`، إدخال سجل 4.49.15، فحص إقلاع واجهة `gui_boot_smoke.py`).
+  CI أخضر على التكوينات الأربعة.
+- الإصدار السابق: 4.49.14 (`2938b33`): غلق نافذة جبري، مصدر وحيد للإصدار،
+  نقل `faster-whisper` إلى متطلبات اختيارية.
 - التزامات التفكيك: `425b0d0`/`8215be3` (media_processing)،
   `6778dab` (upload_pipeline)، `193423a` (توثيق البنية).
 - الملف الرئيسي ~8.1k سطراً بعد نزوله من 9.6k؛ القسم المتبقي الأكبر هو
