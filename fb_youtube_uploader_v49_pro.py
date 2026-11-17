@@ -26,7 +26,6 @@ import html as html_module
 import http.cookiejar
 import urllib.error, urllib.request
 from urllib.parse import urlparse
-import glob
 from datetime import datetime, timedelta, timezone
 from config_store import ConfigRecoveryError, read_config, write_config_atomically
 from file_security import open_private_append, restrict_file_permissions
@@ -41,17 +40,43 @@ from safe_logging import SecureRotatingFileHandler, mask_secret, redact_sensitiv
 from settings_validation import validate_configuration
 from media_processing import (
     LOGO_POSITIONS,
+    SHORTS_MIN_SOURCE,
+    THUMB_BUDGET_UNITS,
+    THUMB_CANDIDATE_COUNT,
+    THUMB_HEIGHT,
+    THUMB_WIDTH,
+    YOUTUBE_THUMB_MAX_BYTES,
+    _audio_rms_per_second,
+    _clean_thumbnail_title,
+    _draw_thumbnail_title,
+    _extract_thumbnail_candidates,
     _ffmpeg_error_detail,
+    _fit_thumbnail_lines,
+    _http_error_reason,
+    _load_caption_font,
+    _pick_best_frame,
+    _thumbnail_display_text,
+    _thumbnail_frame_score,
+    _thumbnail_text_width,
+    _thumbnail_upload_path,
+    _thumbnail_uses_raqm,
+    _wrap_text,
     apply_logo_overlay,
     build_overlay_filter,
     create_logo_badge,
+    create_thumbnail_preview,
+    cut_shorts_clip,
     ffmpeg_available,
+    find_hot_segment,
+    generate_thumbnail,
     probe_video,
+    remove_thumbnail_preview,
+    render_thumbnail_title_from_base,
+    upload_thumbnail,
 )
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageStat, features
 
-import arabic_reshaper
-from bidi.algorithm import get_display
+from PIL import Image
+
 
 import yt_dlp
 from selenium import webdriver
@@ -263,6 +288,17 @@ __all__ = [
     "_safe_normalize_channel_url", "_truncate_smart", "_truncate_suffix_component",
     "_unicode_word_tokens", "_youtube_tag_cost", "build_description",
     "_ffmpeg_error_detail", "build_overlay_filter", "create_logo_badge",
+    "_audio_rms_per_second", "_http_error_reason", "create_thumbnail_preview",
+    "cut_shorts_clip", "find_hot_segment", "generate_thumbnail",
+    "remove_thumbnail_preview", "render_thumbnail_title_from_base",
+    "upload_thumbnail", "THUMB_BUDGET_UNITS",
+    "apply_logo_overlay", "ffmpeg_available", "LOGO_POSITIONS", "SHORTS_MIN_SOURCE",
+    "probe_video", "THUMB_CANDIDATE_COUNT", "THUMB_HEIGHT", "THUMB_WIDTH",
+    "YOUTUBE_THUMB_MAX_BYTES", "_clean_thumbnail_title", "_draw_thumbnail_title",
+    "_extract_thumbnail_candidates", "_fit_thumbnail_lines", "_load_caption_font",
+    "_pick_best_frame", "_thumbnail_display_text", "_thumbnail_frame_score",
+    "_thumbnail_text_width", "_thumbnail_upload_path", "_thumbnail_uses_raqm",
+    "_wrap_text",
     "build_title", "classify_upload_error", "clean_title",
     "ensure_source_attribution", "extract_hashtags", "is_generic_title",
     "normalize_channel_url", "normalize_generated_title", "normalize_youtube_tags",
@@ -2599,764 +2635,28 @@ def download_video(url, page_name="", log_cb=None, retries=MAX_RETRIES, remove_t
         "افحص السجل المحلي وأصلح سبب التنزيل قبل تحرير العنصر.",
     )
 
-# ════════════════════════════════════════════════════
-# THUMBNAILS / SHORTS CUT / ANALYTICS (v4.11.2)
-# ════════════════════════════════════════════════════
-THUMB_WIDTH, THUMB_HEIGHT = 1280, 720
-THUMB_BUDGET_UNITS = 50  # thumbnails.set = 50 وحدة من الحصة العامة
-THUMB_CANDIDATE_COUNT = 6     # عدد اللقطات المرشحة لاختيار أفضل صورة مصغّرة
-THUMB_MIN_SPAN_SECONDS = 8.0  # أقل مدة يستحق الفحص المتعدد للقطات
+def resolve_playlist_id(item, pages, settings):
+    """قائمة تشغيل الصفحة إن وُجدت، وإلا الافتراضية العامة، وإلا None."""
+    name = (item.get("page") or "")
+    page_cfg = next((p for p in pages or []
+                     if (p.get("name") or "") == name), None) or {}
+    return (page_cfg.get("playlist") or settings.get("playlist_id") or "").strip() or None
 
 
-def _contains_arabic(text):
-    return any("\u0600" <= char <= "\u06ff" or "\u0750" <= char <= "\u077f" or "\u08a0" <= char <= "\u08ff" for char in text)
-
-
-def _clean_thumbnail_title(text):
-    text = re.sub(r"https?://\S+", " ", str(text or ""), flags=re.IGNORECASE)
-    text = re.sub(r"(?<!\S)#[^\s#]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _thumbnail_uses_raqm():
-    try:
-        return features.check("raqm")
-    except (AttributeError, ValueError):
-        return False
-
-
-def _thumbnail_display_text(text):
-    rtl = _contains_arabic(text)
-    if not rtl or _thumbnail_uses_raqm():
-        return text, rtl
-    return get_display(arabic_reshaper.reshape(text)), True
-
-
-def _thumbnail_text_width(text, font):
-    display, rtl = _thumbnail_display_text(text)
-    if rtl and _thumbnail_uses_raqm():
-        try:
-            return font.getlength(display, direction="rtl", language="ar")
-        except (TypeError, ValueError):
-            pass
-    return font.getlength(display)
-
-
-def _ellipsize_thumbnail_text(text, max_width, font):
-    text = text.rstrip()
-    while text and _thumbnail_text_width(text + "…", font) > max_width:
-        text = text[:-1].rstrip()
-    return text + "…" if text else "…"
-
-
-def _wrap_text(text, max_width, font=None, max_lines=3):
-    text = _clean_thumbnail_title(text)
-    if not text or max_width <= 0 or max_lines <= 0:
-        return []
-    font = font or _load_caption_font(54)
-    lines, current = [], ""
-    truncated = False
-    for word in text.split():
-        candidate = f"{current} {word}".strip()
-        if _thumbnail_text_width(candidate, font) <= max_width:
-            current = candidate
+def top_performing_titles(limit=3, min_views=0):
+    """أفضل العناوين حسب المشاهدات — تغذية راجعة لتوليد العناوين."""
+    history = {h.get("youtube_id"): h.get("title", "")
+               for h in _read_history() if h.get("youtube_id")}
+    stats = load_state().get("video_stats") or {}
+    scored = []
+    for vid, title in history.items():
+        if not title:
             continue
-        if current:
-            lines.append(current)
-        current = word
-        if len(lines) >= max_lines:
-            truncated = True
-            break
-    if current and len(lines) < max_lines:
-        lines.append(current)
-    if not lines:
-        return []
-    if truncated or _thumbnail_text_width(lines[-1], font) > max_width:
-        lines[-1] = _ellipsize_thumbnail_text(lines[-1], max_width, font)
-    return lines[:max_lines]
-
-
-_FONT_COVERAGE_CACHE = {}
-
-
-def _font_covers_text(path, text):
-    """يتحقق أن الخط يرسم كل حروف النص؛ يخزّن جدول المحارف لكل خط مرة واحدة."""
-    cmap = _FONT_COVERAGE_CACHE.get(path)
-    if cmap is None:
-        try:
-            from fontTools.ttLib import TTFont
-            cmap = TTFont(path, fontNumber=0).getBestCmap() or {}
-        except Exception:
-            cmap = {}
-        _FONT_COVERAGE_CACHE[path] = cmap
-    if not cmap:
-        return False
-    return all(ord(char) in cmap or char.isspace() for char in text)
-
-
-def _load_caption_font(size, text=None):
-    windows_fonts = os.path.join(os.environ.get("WINDIR", r"C:\\Windows"), "Fonts")
-    candidates = (
-        os.path.join(windows_fonts, "arialbd.ttf"),
-        os.path.join(windows_fonts, "tahomabd.ttf"),
-        os.path.join(windows_fonts, "calibrib.ttf"),
-        os.path.join(windows_fonts, "seguisb.ttf"),
-        "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "DejaVuSans-Bold.ttf",
-        "Arial Bold.ttf",
-        "arial.ttf",
-    )
-    for name in candidates:
-        if text and not _font_covers_text(name, text):
-            continue
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    if text:
-        for name in candidates:
-            try:
-                return ImageFont.truetype(name, size)
-            except OSError:
-                continue
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()
-
-
-def _wrap_thumbnail_exact(text, max_width, font, max_lines=2):
-    """يغلّف النص دون حذف؛ يعيد [] إذا لم يتسع في max_lines أسطر بهذا الخط."""
-    text = _clean_thumbnail_title(text)
-    if not text or max_width <= 0 or max_lines <= 0:
-        return []
-    lines, current = [], ""
-    for word in text.split():
-        candidate = f"{current} {word}".strip()
-        if _thumbnail_text_width(candidate, font) <= max_width:
-            current = candidate
-            continue
-        if current:
-            lines.append(current)
-        current = word
-        if len(lines) >= max_lines:
-            return []
-    if current and len(lines) < max_lines:
-        lines.append(current)
-    if lines and all(_thumbnail_text_width(line, font) <= max_width for line in lines):
-        return lines
-    return []
-
-
-def _fit_thumbnail_lines(text, max_width, width, max_lines=2):
-    """يختار أكبر حجم خط يُدخل العنوان كاملاً في الأسطر المسموحة، ثم يتراجع للقص بحذف."""
-    start = max(36, round(width * 0.052))
-    floor = max(30, round(width * 0.030))
-    size = start
-    while size > floor:
-        font = _load_caption_font(size, text=text)
-        lines = _wrap_thumbnail_exact(text, max_width, font, max_lines)
-        if lines:
-            return lines, font
-        size = max(floor, round(size * 0.90))
-    font = _load_caption_font(floor, text=text)
-    lines = _wrap_thumbnail_exact(text, max_width, font, max_lines)
-    if lines:
-        return lines, font
-    return _wrap_text(text, max_width, font=font, max_lines=max_lines), font
-
-
-def _draw_thumbnail_title(image, title):
-    text = _clean_thumbnail_title(title)
-    if not text:
-        return image
-    width, height = image.size
-    rtl = _contains_arabic(text)
-    margin = max(48, round(width * 0.065))
-    accent = max(7, round(width * 0.007))
-    text_width = width - margin * 2 - accent - 24
-    lines, font = _fit_thumbnail_lines(text, text_width, width, max_lines=2)
-    if not lines:
-        return image
-    font_size = getattr(font, "size", 54)
-    ascent, descent = font.getmetrics()
-    line_height = max(round((ascent + descent) * 1.04),
-                      round(font_size * 1.30), round(height * 0.09))
-    top_pad = max(15, round(height * 0.026))
-    bottom_pad = max(18, round(height * 0.03))
-    band_height = min(height, top_pad + line_height * len(lines) + bottom_pad)
-    band_top = height - band_height
-    band = Image.new("RGBA", (width, band_height), (0, 0, 0, 0))
-    band_draw = ImageDraw.Draw(band)
-    for y in range(band_height):
-        progress = y / max(1, band_height - 1)
-        alpha = round(22 + 208 * progress ** 1.45)
-        band_draw.line((0, y, width, y), fill=(7, 12, 22, alpha))
-    result = image.convert("RGBA")
-    result.alpha_composite(band, (0, band_top))
-    draw = ImageDraw.Draw(result)
-    accent_x = width - margin - accent if rtl else margin
-    draw.rounded_rectangle(
-        (accent_x, band_top + top_pad, accent_x + accent, height - bottom_pad),
-        radius=max(3, accent // 2), fill=(239, 73, 78, 245),
-    )
-    placements = []
-    y = band_top + top_pad + max(0, (line_height - (ascent + descent)) // 2)
-    right_edge = width - margin - accent - 22
-    for line in lines:
-        display, line_rtl = _thumbnail_display_text(line)
-        text_rtl = rtl or line_rtl
-        if text_rtl and _thumbnail_uses_raqm():
-            placements.append(((right_edge, y), display,
-                               {"anchor": "ra", "direction": "rtl", "language": "ar"}))
-        elif text_rtl:
-            line_width = font.getlength(display)
-            placements.append(((right_edge - line_width, y), display, {"anchor": "la"}))
-        else:
-            placements.append(((margin + accent + 22, y), display, {"anchor": "la"}))
-        y += line_height
-    shadow_layer = Image.new("RGBA", (width, band_height), (0, 0, 0, 0))
-    shadow_draw = ImageDraw.Draw(shadow_layer)
-    for (pos, display, anchor_kwargs) in placements:
-        shadow_draw.text(
-            (pos[0] + 2, pos[1] + 4), display, font=font, fill=(0, 0, 0, 215),
-            stroke_width=2, stroke_fill=(0, 0, 0, 215), **anchor_kwargs,
-        )
-    result.alpha_composite(shadow_layer.filter(ImageFilter.GaussianBlur(5)), (0, band_top))
-    draw = ImageDraw.Draw(result)
-    for (pos, display, anchor_kwargs) in placements:
-        draw.text(
-            pos, display, font=font, fill=(255, 255, 255, 255),
-            stroke_width=2, stroke_fill=(0, 0, 0, 170), **anchor_kwargs,
-        )
-    return result
-
-
-def render_thumbnail_title_from_base(base_path, title, out_path=None):
-    if not os.path.isfile(base_path) or os.path.islink(base_path):
-        return None
-    owned_output = False
-    if out_path is None:
-        out_path = _temporary_thumbnail_path("fb-youtube-preview-title-")
-        owned_output = True
-    else:
-        out_path = os.path.abspath(os.fspath(out_path))
-        if (
-            os.path.islink(out_path)
-            or not os.path.isfile(out_path)
-            or not os.path.basename(out_path).startswith("fb-youtube-preview-")
-        ):
-            return None
-    success = False
-    try:
-        with Image.open(base_path) as source:
-            image = source.convert("RGB")
-        image = _draw_thumbnail_title(image, title)
-        image.convert("RGB").save(out_path, "PNG")
-        if os.path.getsize(out_path) <= 0:
-            raise OSError("لم يُنشأ ملف معاينة صالح.")
-        success = True
-        return out_path
-    except Exception as error:
-        logging.warning("تعذر تحديث عنوان الصورة المصغرة: %s", redact_sensitive_text(error))
-        return None
-    finally:
-        if owned_output and not success and not os.path.islink(out_path):
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
-
-
-def _temporary_png_path(prefix="fb-youtube-thumbnail-"):
-    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".png")
-    os.close(fd)
-    os.remove(path)
-    return path
-
-
-def _temporary_thumbnail_path(prefix):
-    descriptor, path = tempfile.mkstemp(prefix=prefix, suffix=".png")
-    os.close(descriptor)
-    return path
-
-
-def _thumbnail_frame_score(path):
-    """يعيد درجة ملاءمة الإطار (حدة × إضاءة)؛ 0 عند تعذر قراءة الصورة أو إضاءة شديدة الشحوب/الظلمة."""
-    try:
-        with Image.open(path) as source:
-            gray = source.convert("L").resize((160, 90))
-            brightness = ImageStat.Stat(gray).mean[0]
-            edges = gray.filter(ImageFilter.FIND_EDGES)
-            sharpness = ImageStat.Stat(edges).mean[0]
-    except Exception:
-        return 0.0
-    if brightness < 40.0 or brightness > 225.0:
-        return 0.0
-    closeness = 1.0 - min(1.0, abs(brightness - 118.0) / 118.0)
-    return sharpness * (0.35 + 0.65 * closeness)
-
-
-def _extract_thumbnail_candidates(video_path, duration, tmp_dir):
-    """يستخرج لقطات مرشحة موزّعة على معظم مدة الفيديو في تمريرة ffmpeg واحدة."""
-    duration = float(duration or 0.0)
-    if duration < THUMB_MIN_SPAN_SECONDS:
-        return []
-    start = duration * 0.10
-    span = duration * 0.80
-    pattern = os.path.join(tmp_dir, "frame%03d.png")
-    cmd = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
-           "-ss", f"{start:.2f}", "-i", video_path,
-           "-frames:v", str(THUMB_CANDIDATE_COUNT),
-           "-vf", (f"fps={THUMB_CANDIDATE_COUNT / span:.5f},"
-                   f"scale={THUMB_WIDTH}:{THUMB_HEIGHT}:force_original_aspect_ratio=increase,"
-                   f"crop={THUMB_WIDTH}:{THUMB_HEIGHT}"),
-           pattern]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        logging.warning("تعذر استخراج لقطات الصورة المصغرة: %s", error)
-        return []
-    if proc.returncode != 0:
-        logging.warning("فشل استخراج لقطات الصورة المصغرة: %s", (proc.stderr or "")[-500:])
-        return []
-    candidates = []
-    for path in sorted(glob.glob(os.path.join(tmp_dir, "frame*.png"))):
-        try:
-            if os.path.getsize(path) > 0:
-                candidates.append(path)
-        except OSError:
-            continue
-    return candidates
-
-
-def _pick_best_frame(video_path, duration, log_cb=None):
-    """يختار أوضح وأفضل إضاءة من لقطات مرشحة؛ يعيد مسار PNG مؤقت أو None."""
-    tmp_dir = tempfile.mkdtemp(prefix="fb-youtube-frames-")
-    try:
-        candidates = _extract_thumbnail_candidates(video_path, duration, tmp_dir)
-        if not candidates:
-            return None
-        scored = sorted(candidates, key=_thumbnail_frame_score, reverse=True)
-        best = scored[0] if _thumbnail_frame_score(scored[0]) > 0 else None
-        if best is None:
-            return None
-        fd, kept = tempfile.mkstemp(prefix="fb-youtube-frame-best-", suffix=".png")
-        os.close(fd)
-        try:
-            shutil.copyfile(best, kept)
-        except OSError:
-            try:
-                os.unlink(kept)
-            except OSError:
-                pass
-            raise
-        return kept
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def _enhance_frame(image):
-    """يرفع التباين والتشبع والحدة قليلاً لتظهر الصورة أوضح في شبكة YouTube."""
-    image = ImageEnhance.Contrast(image).enhance(1.08)
-    image = ImageEnhance.Color(image).enhance(1.10)
-    image = ImageEnhance.Sharpness(image).enhance(1.25)
-    return image
-
-
-def _capture_fallback_frame(video_path, duration, out_path, log_cb=None):
-    """المسار القديم: لقطة واحدة من ربع المدة؛ يعيد True عند النجاح."""
-    at = min(max((duration or 0) * 0.25, 1.0), max((duration or 0) - 0.5, 0.0))
-    cmd = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}",
-           "-i", video_path, "-frames:v", "1",
-           "-vf", f"scale={THUMB_WIDTH}:{THUMB_HEIGHT}:force_original_aspect_ratio=increase,crop={THUMB_WIDTH}:{THUMB_HEIGHT}",
-           out_path]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        proc = None
-        logging.warning("فشل التقاط الصورة المصغرة: %s", error)
-    if proc is None or proc.returncode != 0 or not os.path.isfile(out_path):
-        logging.warning("فشل التقاط الصورة المصغرة: %s", (getattr(proc, "stderr", "") or "")[-500:])
-        if log_cb:
-            log_cb("فشل توليد الصورة المصغرة — سيُرفع الفيديو بدونها")
-        return False
-    return True
-
-
-def generate_thumbnail(video_path, title, out_path=None, log_cb=None, *, allow_empty_output=False):
-    """يلتقط أفضل لقطة ويكتب العنوان؛ يستخدم ملفاً فريداً ولا يستبدل ملفات موجودة."""
-    if not ffmpeg_available():
-        if log_cb:
-            log_cb("تعذر توليد الصورة المصغرة: FFmpeg غير مثبت. ثبّته وأضفه إلى PATH.")
-        return None
-    owned_output = False
-    if out_path is None:
-        out_path = _temporary_thumbnail_path("fb-youtube-thumbnail-")
-        owned_output = True
-    else:
-        out_path = os.path.abspath(os.fspath(out_path))
-        if os.path.lexists(out_path):
-            if (
-                not allow_empty_output
-                or os.path.islink(out_path)
-                or not os.path.isfile(out_path)
-                or os.path.getsize(out_path) != 0
-            ):
-                if log_cb:
-                    log_cb("تعذر حفظ الصورة المصغرة: ملف الإخراج موجود مسبقاً ولم يُستبدل.")
-                return None
-        else:
-            try:
-                descriptor = os.open(
-                    out_path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                )
-                os.close(descriptor)
-                owned_output = True
-            except OSError as error:
-                if log_cb:
-                    log_cb(f"تعذر إنشاء ملف الصورة المصغرة: {redact_sensitive_text(error)}")
-                return None
-    success = False
-    try:
-        _, _, duration = probe_video(video_path)
-        frame_path = _pick_best_frame(video_path, duration, log_cb=log_cb)
-        if frame_path is not None:
-            try:
-                with Image.open(frame_path) as source_image:
-                    thumbnail = _enhance_frame(source_image.convert("RGB"))
-            finally:
-                try:
-                    os.remove(frame_path)
-                except OSError:
-                    pass
-            thumbnail.save(out_path, "PNG")
-        else:
-            if not _capture_fallback_frame(video_path, duration, out_path, log_cb=log_cb):
-                return None
-            with Image.open(out_path) as source_image:
-                thumbnail = _enhance_frame(source_image.convert("RGB"))
-            thumbnail.save(out_path, "PNG")
-        if _clean_thumbnail_title(title):
-            thumbnail = _draw_thumbnail_title(thumbnail, title)
-            thumbnail.convert("RGB").save(out_path, "PNG")
-        if not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
-            raise OSError("لم يُنشأ ملف صورة مصغّرة صالح.")
-        if os.name == "posix" and not restrict_file_permissions(out_path):
-            raise OSError("تعذر تقييد أذونات ملف الصورة المصغّرة.")
-        success = True
-        return out_path
-    except Exception as error:
-        safe_error = redact_sensitive_text(error)
-        logging.warning("خطأ في توليد الصورة المصغرة: %s", safe_error)
-        if log_cb:
-            log_cb(f"تعذر توليد الصورة المصغرة: {safe_error}. تحقق من الملف وFFmpeg ثم أعد المحاولة.")
-        return None
-    finally:
-        if owned_output and not success and out_path and not os.path.islink(out_path):
-            try:
-                os.unlink(out_path)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logging.warning("تعذر حذف الصورة المصغّرة الجزئية: %s", redact_sensitive_text(error))
-
-
-def create_thumbnail_preview(video_path, title, log_cb=None):
-    base_path = _temporary_thumbnail_path("fb-youtube-preview-base-")
-    preview_path = _temporary_thumbnail_path("fb-youtube-preview-")
-    if not generate_thumbnail(
-        video_path, "", out_path=base_path, log_cb=log_cb, allow_empty_output=True
-    ):
-        remove_thumbnail_preview(base_path, preview_path)
-        return None, None
-    if not render_thumbnail_title_from_base(base_path, title, out_path=preview_path):
-        remove_thumbnail_preview(base_path, preview_path)
-        return None, None
-    return base_path, preview_path
-
-
-def remove_thumbnail_preview(*paths):
-    temp_root = os.path.realpath(tempfile.gettempdir())
-    allowed_prefixes = ("fb-youtube-preview-", "fb-youtube-thumbnail-", "fb-youtube-thumb-")
-    for path in set(paths):
-        if not path:
-            continue
-        candidate = os.path.abspath(os.fspath(path))
-        if os.path.islink(candidate) or not os.path.basename(candidate).startswith(allowed_prefixes):
-            continue
-        if os.path.realpath(os.path.dirname(candidate)) != temp_root:
-            continue
-        try:
-            os.unlink(candidate)
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            logging.warning("تعذر حذف صورة معاينة مؤقتة: %s", redact_sensitive_text(error))
-
-
-YOUTUBE_THUMB_MAX_BYTES = 2_000_000  # حد YouTube للصور المصغرة 2MB
-
-
-def _thumbnail_upload_path(path):
-    """يعيد مساراً ضمن حد 2MB، أو None إذا تعذّر تجهيزه.
-
-    كان يعيد مسار JPEG فارغاً أو أكبر من الحد عند فشل التحويل، فيُرفع ملف
-    تالف ويظهر سبب مضلّل بدل رسالة التحويل الحقيقية.
-    """
-    try:
-        if os.path.getsize(path) <= YOUTUBE_THUMB_MAX_BYTES:
-            return path
-    except OSError:
-        return None
-    descriptor, jpg_path = tempfile.mkstemp(prefix="fb-youtube-thumb-", suffix=".jpg")
-    os.close(descriptor)
-    try:
-        for quality in (90, 80, 70):
-            with Image.open(path) as source:
-                source.convert("RGB").save(jpg_path, "JPEG", quality=quality, optimize=True)
-            if os.path.getsize(jpg_path) <= YOUTUBE_THUMB_MAX_BYTES:
-                return jpg_path
-    except Exception as error:
-        logging.warning("تعذر تحويل الصورة المصغرة إلى JPEG: %s", redact_sensitive_text(error))
-    try:
-        os.unlink(jpg_path)
-    except OSError:
-        pass
-    return None
-
-
-def _http_error_reason(error):
-    """يستخرج سبب خطأ Google API القابل للقراءة بدل رسالة عامة."""
-    try:
-        data = json.loads(error.resp.get("content", "{}") or "{}")
-        errs = (data.get("error") or {}).get("errors") or []
-        reason = errs[0].get("reason") if errs else (data.get("error") or {}).get("status")
-        if reason:
-            reasons = {
-                "quotaExceeded": "نفدت حصة YouTube Data API اليومية",
-                "dailyLimitExceeded": "نفدت حصة YouTube Data API اليومية",
-                "rateLimitExceeded": "تجاوز معدل الطلبات — أعد المحاولة لاحقاً",
-                "forbidden": "تتطلب قناة موثّقة أو صلاحية حساب كافية",
-                "unauthorized": "صلاحية OAuth غير كافية لهذا الحساب",
-                "invalidThumbnailImageFile": "صيغة الصورة غير مقبولة",
-                "thumbnailImageTooLarge": "حجم الصورة يتجاوز 2MB",
-            }
-            return reasons.get(reason, reason)
-    except Exception:
-        pass
-    return "سبب غير معروف — راجع errors.log"
-
-
-def upload_thumbnail(youtube, video_id, path, log_cb=None):
-    """يرفع صورة مصغرة للفيديو (50 وحدة). الفشل يحذّر فقط ولا يوقف الرفع."""
-    if not os.path.isfile(path):
-        if log_cb:
-            log_cb("ملف الصورة المصغرة مفقود")
-        return False
-    upload_path = _thumbnail_upload_path(path)
-    if not upload_path:
-        if log_cb:
-            log_cb("تعذر تجهيز الصورة المصغرة ضمن حد YouTube (2MB)؛ اكتمل رفع الفيديو بدونها.")
-        return False
-    converted = upload_path != path
-    try:
-        youtube.thumbnails().set(videoId=video_id,
-                                 media_body=MediaFileUpload(upload_path)).execute()
-        if log_cb:
-            if converted:
-                log_cb(f"رُفعت الصورة المصغرة للفيديو {video_id} (صيغة JPEG ضمن حد 2MB)")
-            else:
-                log_cb(f"رُفعت الصورة المصغرة للفيديو {video_id}")
-        return True
-    except HttpError as error:
-        logging.warning("فشل رفع الصورة المصغرة %s: %s", video_id, error)
-        if log_cb:
-            log_cb(f"تعذر رفع الصورة المصغرة ({_http_error_reason(error)}) — تابعنا الرفع")
-        return False
-    finally:
-        if converted:
-            try:
-                os.remove(upload_path)
-            except OSError:
-                pass
-
-
-SHORTS_CLIP_SECONDS = 58
-SHORTS_MIN_SOURCE = 95  # أقل مدة للمقطع الأصلي حتى يستحق القص
-
-
-def _audio_rms_per_second(video_path):
-    """يعيد {ثانية: متوسط RMS} عبر ffmpeg astats.
-
-    ``None`` يعني أن ffmpeg نفسه فشل أو تجاوز المهلة — لا أن الفيديو صامت؛
-    الخلط بينهما كان يُسجّل «لا صوت» ويترك ميزة القص معطلة بلا سبب ظاهر.
-    """
-    try:
-        cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-i", video_path, "-vn",
-               "-af", "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level",
-               "-f", "null", "-"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-    except subprocess.TimeoutExpired:
-        logging.warning("انتهت مهلة تحليل الصوت (900 ثانية)؛ لم تُنشأ نسخة Shorts.")
-        return None
-    except OSError as error:
-        logging.warning("تعذر تشغيل ffmpeg لتحليل الصوت: %s", error)
-        return None
-    if proc.returncode != 0:
-        logging.warning(
-            "فشل ffmpeg في تحليل الصوت (exit %s): %s",
-            proc.returncode, (proc.stderr or "")[-300:],
-        )
-        return None
-    samples, current_t = [], None
-    for raw in (proc.stderr or "").splitlines() + (proc.stdout or "").splitlines():
-        line = raw.strip()
-        m = re.search(r"pts_time:([0-9.]+)", line)
-        if m:
-            current_t = float(m.group(1))
-            continue
-        if "RMS_level" in line and current_t is not None:
-            m2 = re.search(r"RMS_level=(-?[0-9.]+|-inf)", line)
-            if m2:
-                try:
-                    val = float(m2.group(1))
-                except ValueError:
-                    val = -91.0
-                if val == float("-inf"):
-                    val = -91.0
-                samples.append((int(current_t), val))
-                current_t = None
-    buckets = {}
-    for sec, val in samples:
-        buckets.setdefault(sec, []).append(val)
-    return {sec: sum(vals) / len(vals) for sec, vals in buckets.items()}
-
-
-def find_hot_segment(rms_by_second, clip_seconds=SHORTS_CLIP_SECONDS,
-                     min_source=SHORTS_MIN_SOURCE, source_duration=None):
-    """نافذة انزلاقية بطول الـ Short تختار أعلى متوسط صوت. يعيد (بداية، مدة) أو None."""
-    span = int(source_duration) if source_duration else (max(rms_by_second) + 1 if rms_by_second else 0)
-    if span < min_source or span < clip_seconds:
-        return None
-    last_start = span - clip_seconds
-    best_s, best_avg = 0, -1e9
-    for s in range(0, last_start + 1):
-        window = [rms_by_second[i] for i in range(s, s + clip_seconds) if i in rms_by_second]
-        if not window:
-            continue
-        avg = sum(window) / len(window)
-        if avg > best_avg:
-            best_avg, best_s = avg, s
-    if best_avg <= -1e8:
-        return None
-    return best_s, clip_seconds
-
-
-def cut_shorts_clip(source_path, start, duration, out_path=None, log_cb=None):
-    """يقص نسخة مؤقتة فريدة ولا يستبدل أي ملف موجود."""
-    source_path = os.path.abspath(os.fspath(source_path or ""))
-    if os.path.islink(source_path) or not os.path.isfile(source_path):
-        if log_cb:
-            log_cb("تعذر قص Shorts: ملف المصدر غير موجود أو ليس ملفاً عادياً.")
-        return None
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if not ffmpeg_bin:
-        if log_cb:
-            log_cb("تعذر قص Shorts: FFmpeg غير مثبت. ثبّته وأضفه إلى PATH.")
-        return None
-    try:
-        start_value = float(start)
-        duration_value = float(duration)
-    except (TypeError, ValueError, OverflowError):
-        if log_cb:
-            log_cb("تعذر قص Shorts: مدة البداية أو القص غير صالحة.")
-        return None
-    if not math.isfinite(start_value) or not math.isfinite(duration_value) or start_value < 0 or duration_value <= 0:
-        if log_cb:
-            log_cb("تعذر قص Shorts: مدة البداية أو القص غير صالحة.")
-        return None
-    owned_output = False
-    if out_path is None:
-        output_directory = os.path.dirname(source_path)
-        prefix = f"{os.path.splitext(os.path.basename(source_path))[0]}_shorts-"
-        try:
-            descriptor, out_path = tempfile.mkstemp(
-                prefix=prefix, suffix=".mp4", dir=output_directory
-            )
-            os.close(descriptor)
-            owned_output = True
-        except OSError as error:
-            if log_cb:
-                log_cb(f"تعذر إنشاء ملف Shorts مؤقت: {redact_sensitive_text(error)}")
-            return None
-    else:
-        out_path = os.path.abspath(os.fspath(out_path))
-        if os.path.lexists(out_path):
-            if log_cb:
-                log_cb("تعذر قص Shorts: ملف الإخراج موجود مسبقاً ولم يُستبدل.")
-            return None
-        owned_output = True
-    success = False
-    try:
-        cmd = [ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
-               "-ss", str(start_value), "-t", str(duration_value), "-i", source_path,
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-               "-c:a", "aac", "-movflags", "+faststart", out_path]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
-            detail = redact_sensitive_text((proc.stderr or "").strip())[-300:]
-            logging.warning("فشل قص نسخة Shorts: %s", detail or "لم يُنشأ ملف صالح")
-            if log_cb:
-                log_cb(f"فشل قص Shorts: {detail or 'لم يُنشأ ملف صالح'}. تحقق من FFmpeg والملف ثم أعد المحاولة.")
-            return None
-        if os.name == "posix" and not restrict_file_permissions(out_path):
-            if log_cb:
-                log_cb("تعذر تقييد أذونات ملف Shorts؛ لم يُستخدم.")
-            return None
-        success = True
-        return out_path
-    except Exception as error:
-        safe_error = redact_sensitive_text(error)
-        logging.warning("خطأ في قص نسخة Shorts: %s", safe_error)
-        if log_cb:
-            log_cb(f"خطأ في قص Shorts: {safe_error}. تحقق من FFmpeg والملف ثم أعد المحاولة.")
-        return None
-    finally:
-        if owned_output and not success and out_path and not os.path.islink(out_path):
-            try:
-                os.unlink(out_path)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logging.warning("تعذر حذف ملف Shorts الجزئي: %s", redact_sensitive_text(error))
-
-
-def _read_history():
-    """يقرأ سجل الرفع jsonl بسطور سليمة فقط."""
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    out = []
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except ValueError:
-                    continue
-    except OSError:
-        pass
-    return out
+        views = (stats.get(vid) or {}).get("views", 0)
+        if views >= min_views:
+            scored.append((views, title))
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return [f"{title} ({views} مشاهدة)" for views, title in scored[:limit]]
 
 
 def collect_video_stats(youtube, log_cb=None, limit=50):
@@ -3392,28 +2692,24 @@ def collect_video_stats(youtube, log_cb=None, limit=50):
     return stats
 
 
-def top_performing_titles(limit=3, min_views=0):
-    """أفضل العناوين حسب المشاهدات — تغذية راجعة لتوليد العناوين."""
-    history = {h.get("youtube_id"): h.get("title", "")
-               for h in _read_history() if h.get("youtube_id")}
-    stats = load_state().get("video_stats") or {}
-    scored = []
-    for vid, title in history.items():
-        if not title:
-            continue
-        views = (stats.get(vid) or {}).get("views", 0)
-        if views >= min_views:
-            scored.append((views, title))
-    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    return [f"{title} ({views} مشاهدة)" for views, title in scored[:limit]]
-
-
-def resolve_playlist_id(item, pages, settings):
-    """قائمة تشغيل الصفحة إن وُجدت، وإلا الافتراضية العامة، وإلا None."""
-    name = (item.get("page") or "")
-    page_cfg = next((p for p in pages or []
-                     if (p.get("name") or "") == name), None) or {}
-    return (page_cfg.get("playlist") or settings.get("playlist_id") or "").strip() or None
+def _read_history():
+    """يقرأ سجل الرفع jsonl بسطور سليمة فقط."""
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    out = []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return out
 
 
 # ════════════════════════════════════════════════════

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import fb_youtube_uploader_v49_pro as app
+import media_processing
 import texttools
 from settings_validation import validate_configuration
 
@@ -207,7 +208,7 @@ def test_thumbnail_conversion_failure_returns_none(tmp_path: Path, monkeypatch) 
 def test_thumbnail_upload_refuses_when_conversion_fails(tmp_path: Path, monkeypatch) -> None:
     image = tmp_path / "thumb.png"
     image.write_bytes(b"x")
-    monkeypatch.setattr(app, "_thumbnail_upload_path", lambda _path: None)
+    monkeypatch.setattr(media_processing, "_thumbnail_upload_path", lambda _path: None)
     messages = []
 
     assert app.upload_thumbnail(object(), "vid", str(image), messages.append) is False

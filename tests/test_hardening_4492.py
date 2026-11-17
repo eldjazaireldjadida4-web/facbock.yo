@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import fb_youtube_uploader_v49_pro as app
+import media_processing
 from content_review_bridge import _review_command
 
 
@@ -210,8 +211,8 @@ def test_audio_analysis_distinguishes_ffmpeg_failure_from_silence(tmp_path: Path
 def test_failed_frame_copy_leaves_no_temp_file(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "frame.png"
     source.write_bytes(b"png")
-    monkeypatch.setattr(app, "_extract_thumbnail_candidates", lambda *_a, **_k: [str(source)])
-    monkeypatch.setattr(app, "_thumbnail_frame_score", lambda *_a, **_k: 1.0)
+    monkeypatch.setattr(media_processing, "_extract_thumbnail_candidates", lambda *_a, **_k: [str(source)])
+    monkeypatch.setattr(media_processing, "_thumbnail_frame_score", lambda *_a, **_k: 1.0)
 
     def failing_copy(*_args, **_kwargs):
         raise OSError("disk full")
