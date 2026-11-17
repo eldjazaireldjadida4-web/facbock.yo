@@ -20,6 +20,7 @@ import content_safety
 import control_plane
 import facebook_auth
 import fb_youtube_uploader_v49_pro as app
+import upload_pipeline as pipe
 import fburls
 import safe_logging
 import uploaderrors
@@ -297,10 +298,10 @@ def test_post_upload_rejection_is_not_reported_as_success(tmp_path: Path, monkey
 
 
 def test_upload_status_failure_detects_processing_failure() -> None:
-    assert app.upload_status_failure({"uploadStatus": "uploaded", "processingStatus": "failed"})
-    assert app.upload_status_failure({"uploadStatus": "rejected"})
-    assert app.upload_status_failure({"uploadStatus": "uploaded"}) == ""
-    assert app.upload_status_failure(None) == ""
+    assert pipe.upload_status_failure({"uploadStatus": "uploaded", "processingStatus": "failed"})
+    assert pipe.upload_status_failure({"uploadStatus": "rejected"})
+    assert pipe.upload_status_failure({"uploadStatus": "uploaded"}) == ""
+    assert pipe.upload_status_failure(None) == ""
 
 
 class _IdleProgress:
@@ -331,7 +332,7 @@ class _StalledYouTube:
 
 
 def test_stalled_resumable_session_terminates_instead_of_looping(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(app, "IDLE_CHUNK_WAIT_SECONDS", 0)
+    monkeypatch.setattr(pipe, "IDLE_CHUNK_WAIT_SECONDS", 0)
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"video")
     youtube = _StalledYouTube()
@@ -342,7 +343,7 @@ def test_stalled_resumable_session_terminates_instead_of_looping(tmp_path: Path,
     )
 
     assert result == app.UPLOAD_RESULT_UNKNOWN
-    assert youtube.request.calls == app.MAX_IDLE_CHUNKS + 1
+    assert youtube.request.calls == pipe.MAX_IDLE_CHUNKS + 1
 
 
 def test_promotion_keeps_the_file_when_permissions_cannot_be_restricted(

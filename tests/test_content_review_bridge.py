@@ -15,6 +15,7 @@ from content_review_bridge import (
 )
 import control_plane
 import fb_youtube_uploader_v49_pro as app
+import upload_pipeline as pipe
 
 
 def clear_report(video, title="title", description="description", tags=None):
@@ -146,8 +147,8 @@ def test_review_and_upload_use_same_budgeted_tags(monkeypatch, tmp_path):
         captured["caption"] = caption
         return True, "clear"
 
-    monkeypatch.setattr(app, "validate_content_review", allow_review)
-    monkeypatch.setattr(app, "MediaFileUpload", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(pipe, "validate_content_review", allow_review)
+    monkeypatch.setattr(pipe, "MediaFileUpload", lambda *_args, **_kwargs: object())
 
     class Request:
         def next_chunk(self):

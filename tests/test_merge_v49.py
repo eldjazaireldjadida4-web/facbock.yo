@@ -15,11 +15,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import upload_pipeline as pipe
+
 import pytest
 import ai_client
 from googleapiclient.errors import HttpError
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "fb_youtube_uploader_v49_pro.py"
+
 spec = importlib.util.spec_from_file_location("merged49", MODULE_PATH)
 assert spec and spec.loader
 app = importlib.util.module_from_spec(spec)
@@ -203,14 +206,14 @@ def test_playlist_failure_does_not_duplicate_upload(monkeypatch, tmp_path: Path)
 # ─────────────────────────── التحقق بعد الرفع ───────────────────────────
 def test_verify_upload_warns_when_public_requested_but_private() -> None:
     messages: list[str] = []
-    app.verify_upload(ListYouTube([{"status": {"privacyStatus": "private"}}]),
+    pipe.verify_upload(ListYouTube([{"status": {"privacyStatus": "private"}}]),
                       "vid", "public", None, messages.append)
     assert any("private" in m or "غير مُدقّق" in m for m in messages)
 
 
 def test_verify_upload_accepts_schedule() -> None:
     messages: list[str] = []
-    app.verify_upload(ListYouTube([{"status": {"privacyStatus": "private",
+    pipe.verify_upload(ListYouTube([{"status": {"privacyStatus": "private",
                                                "publishAt": "2026-09-13T10:00:00Z"}}]),
                       "vid", "private",
                       datetime(2026, 9, 13, 10, 0, tzinfo=timezone.utc), messages.append)
@@ -219,7 +222,7 @@ def test_verify_upload_accepts_schedule() -> None:
 
 def test_verify_upload_flags_missing_publish_at() -> None:
     messages: list[str] = []
-    app.verify_upload(ListYouTube([{"status": {"privacyStatus": "private"}}]),
+    pipe.verify_upload(ListYouTube([{"status": {"privacyStatus": "private"}}]),
                       "vid", "private",
                       datetime(2026, 9, 13, 10, 0, tzinfo=timezone.utc), messages.append)
     assert any("لم يقبل وقت الجدولة" in m for m in messages)
@@ -230,7 +233,7 @@ def test_verify_upload_soft_on_failure() -> None:
         def videos(self):
             raise RuntimeError("no scope")
 
-    assert app.verify_upload(Broken(), "vid", "public", None, None) is None
+    assert pipe.verify_upload(Broken(), "vid", "public", None, None) is None
 
 
 # ─────────────────────────── الإسناد الشفاف للمصدر ───────────────────────────
@@ -369,7 +372,7 @@ def test_upload_enforces_title_and_total_tag_limits(monkeypatch, tmp_path: Path)
             captured.update(kwargs)
             return FakeUploadRequest()
 
-    monkeypatch.setattr(app, "MediaFileUpload", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(pipe, "MediaFileUpload", lambda *_args, **_kwargs: object())
     raw_title = "عنوان " * 30
     tags = ["A" * 490, "Foo Bar", "Over budget"]
     result = app.upload_video(

@@ -10,6 +10,7 @@ import configparser
 from pathlib import Path
 
 import pytest
+import upload_pipeline as pipe
 
 import fb_youtube_uploader_v49_pro as app
 from texttools import is_generic_title, prepare_public_title, preserve_source_title
@@ -79,7 +80,7 @@ def test_title_read_back_mismatch_is_logged(tmp_path: Path, caplog) -> None:
             return StatusRequest()
 
     logs = []
-    app.verify_upload(
+    pipe.verify_upload(
         YouTube(), "abcdefghijk", "private", None, logs.append,
         expected_title="هدف المباراة في الدقيقة الأخيرة",
     )
@@ -104,7 +105,7 @@ def test_matching_title_produces_no_warning() -> None:
             return StatusRequest()
 
     logs = []
-    app.verify_upload(YouTube(), "abcdefghijk", "private", None, logs.append,
+    pipe.verify_upload(YouTube(), "abcdefghijk", "private", None, logs.append,
                       expected_title="عنوان مطابق")
 
     assert not any("يختلف" in message for message in logs)
