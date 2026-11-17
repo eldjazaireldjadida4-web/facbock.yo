@@ -21,7 +21,8 @@
 | `fburls.py` | تطبيع روابط صفحات وقنوات فيسبوك |
 | `uploaderrors.py` | تصنيف أخطاء الرفع (`classify_upload_error`، `_http_status`...) |
 | `file_security.py` | `restrict_file_permissions`، `open_private_append` |
-| `safe_logging.py` | سجلات دوّارة مع تنقيح الأسرار (`redact_sensitive_text`) || `version.py` | المصدر الوحيد لرقم الإصدار (`APP_VERSION`)؛ يستورده الملف الرئيسي و`diagnostic_report` |
+| `safe_logging.py` | سجلات دوّارة مع تنقيح الأسرار (`redact_sensitive_text`) |
+| `version.py` | المصدر الوحيد لرقم الإصدار (`APP_VERSION`)؛ يستورده الملف الرئيسي و`diagnostic_report` |
 | `state_repair/ledger` | إصلاح ملفات الحالة التالفة (`repair_state_files`) يبقى في الملف الرئيسي لأن اختباراته تخترق ثوابت المسارات على `app` |
 | `local_transcription.py` | تفريغ صوتي محلي اختياري |
 | `notify.py` | إشعارات Telegram الاختيارية |
