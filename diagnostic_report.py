@@ -1,4 +1,5 @@
 from __future__ import annotations
+from version import APP_VERSION
 
 import configparser
 import errno
@@ -24,7 +25,7 @@ from facebook_auth import facebook_cookie_setup_status
 from facebook_scraper import DEFAULT_NETWORK_PREFLIGHT_TIMEOUT
 from safe_logging import redact_sensitive_text
 
-APP_VERSION = "4.49.11"
+
 REPORT_DIRECTORY = "reports"
 YOUTUBE_AUTH_FAILURE_THRESHOLD = 3
 NETWORK_ERROR_MARKERS = (

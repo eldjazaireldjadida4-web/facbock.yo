@@ -1,11 +1,32 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
+_WINDOWS_PERMISSION_WARNING_EMITTED = False
 
-def restrict_file_permissions(path: str | os.PathLike[str], mode: int = 0o600) -> bool:
-    if os.name == "nt":
+
+def _warn_windows_permissions_once():
+    """يحذّر مرة واحدة أن chmod/0600 غير مطبق على Windows — لا عطل إطلاقاً."""
+    global _WINDOWS_PERMISSION_WARNING_EMITTED
+    if _WINDOWS_PERMISSION_WARNING_EMITTED:
+        return
+    _WINDOWS_PERMISSION_WARNING_EMITTED = True
+    logging.warning(
+        "حماية الملفات (0600) غير مطبقة على Windows؛ "
+        "اعتمد صلاحيات NTFS للمستخدم الحالي لإخفاء الرموز محلياً."
+    )
+
+
+def restrict_file_permissions(path: str | os.PathLike[str], mode: int = 0o600,
+                              _force_windows: bool = False) -> bool:
+    global _WINDOWS_PERMISSION_WARNING_EMITTED
+    if _force_windows or os.name == "nt":
+        first = not _WINDOWS_PERMISSION_WARNING_EMITTED
+        _WINDOWS_PERMISSION_WARNING_EMITTED = True
+        if first:
+            _warn_windows_permissions_once()
         return False
     target = Path(path)
     try:

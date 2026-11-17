@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.13 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.14 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -188,7 +188,7 @@ FS  = ("Segoe UI", 12, "bold")
 FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
-__version__ = "4.49.13"
+from version import APP_VERSION as __version__
 APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -3132,6 +3132,10 @@ class App:
         if busy:
             logging.warning("إغلاق الواجهة بعد مهلة الانتظار؛ العامل ما زال يعمل وسيُنهى مع العملية.")
         self.root.destroy()
+        if busy:
+            # العامل غير daemon: تاركًا العملية تعيش بعد destroy() كانت تُبقي
+            # النافذة ميتة والمعالج حيّاً بلا سبب. إنهاء حاسم بعد إغلاق النافذة.
+            os._exit(0)
 
     # ─────────── بناء الواجهة ───────────
     def _apply_styles(self):

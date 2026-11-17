@@ -14,7 +14,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+GEMINI_MODELS = ["gemini-2.5-flash"]
+# ملاحظة: أُزيلت gemini-2.0-flash وgemini-1.5-flash بعد تأكيد إيقاف Google
+# لهما (2026)؛ لا تُضف موديلات جديدة إلى القائمة دون تحقق من التوثيق الرسمي.
+
 AI_STYLES = {
     "احترافي متوازن": "اكتب بأسلوب احترافي متوازن: واضح، جذاب، وصادق بدون مبالغة.",
     "جذاب (Clickbait معتدل)": "اكتب بأسلوب جذاب يثير الفضول لكن بدون كذب أو وعود كاذبة — العنوان يجب أن يطابق المحتوى.",
@@ -109,22 +112,33 @@ def gemini_generate(prompt, model, keys_path, read_json, write_json,
             # خاطئاً؛ اعتباره مفتاحاً تالفاً يعطّل مفتاحاً سليماً 24 ساعة.
             lowered = body.lower()
             key_problem = "api_key_invalid" in lowered or "api key not valid" in lowered
+            # 403 مع PERMISSION_DENIED أو SERVICE_DISABLED تعني منعاً على
+            # المشروع (تفعيل الخدمة/الفوترة) وليس نفاد حصة مؤقت؛ تعطيل المفتاح
+            # مع رسالة واضحة يمنع دوّار 24 ساعة بلا جدوى.
+            permission_problem = e.code == 403 and any(
+                marker in lowered
+                for marker in ("permission_denied", "service_disabled",
+                               "service_not_enabled", "billing")
+            )
             invalid = e.code == 401 or (e.code == 403 and "API_KEY_INVALID" in body) \
-                or (e.code == 400 and (not body.strip() or key_problem))
+                or (e.code == 400 and (not body.strip() or key_problem)) \
+                or permission_problem
             if invalid:
-                ai_mark_exhausted(keys, idx, f"مفتاح غير صالح (HTTP {e.code})",
-                                  keys_path, write_json, harden=harden)
+                reason = "منع مشروع: فعّل Generative Language API أو راجع الفوترة" \
+                    if permission_problem else f"مفتاح غير صالح (HTTP {e.code})"
+                ai_mark_exhausted(keys, idx, reason, keys_path, write_json, harden=harden)
                 if log_cb:
-                    log_cb(f"مفتاح Gemini #{idx+1} غير صالح — عطّلته. راجعه في aistudio.google.com")
+                    log_cb(f"مفتاح Gemini #{idx+1} مرفوض ({e.code}) — {reason}")
                 continue
-            if e.code in (403, 429):
-                ai_mark_exhausted(keys, idx, f"نفاد الحصة (HTTP {e.code})",
+            if e.code == 429:
+                ai_mark_exhausted(keys, idx, "نفاد الحصة (HTTP 429)",
                                   keys_path, write_json, harden=harden)
                 if log_cb:
                     log_cb(f"نفدت حصة مفتاح Gemini #{idx+1} — الانتقال للتالي…")
                 continue
             # خطأ طلب/خادم غير مرتبط بالمفتاح: تبريد قصير بدل تعطيل يوم كامل.
             cooldown = (datetime.now() + timedelta(minutes=10)).isoformat(timespec="seconds")
+
             keys[idx]["last_error"] = f"HTTP {e.code}: {body[:120]}"
             keys[idx]["exhausted_until"] = cooldown
             save_ai_keys(keys, keys_path, write_json, harden=harden)
