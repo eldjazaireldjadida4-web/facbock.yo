@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import fb_youtube_uploader_v49_pro as app
+import upload_pipeline as pipe
 import texttools
 
 
@@ -108,7 +109,7 @@ def test_facebook_card_title_reaches_youtube_upload_payload(tmp_path, monkeypatc
             captured.update(kwargs)
             return FakeRequest()
 
-    monkeypatch.setattr(app, "MediaFileUpload", lambda *_a, **_k: object())
+    monkeypatch.setattr(pipe, "MediaFileUpload", lambda *_a, **_k: object())
     result = app.upload_video(FakeYouTube(), video_data, tags=["كرة"])
 
     assert result == "abcdefghijk"
@@ -133,7 +134,7 @@ def test_upload_video_keeps_preserved_facebook_title_exact(tmp_path, monkeypatch
 
     video_path = tmp_path / "video.mp4"
     video_path.write_bytes(b"video")
-    monkeypatch.setattr(app, "MediaFileUpload", lambda *_a, **_k: object())
+    monkeypatch.setattr(pipe, "MediaFileUpload", lambda *_a, **_k: object())
     result = app.upload_video(
         FakeYouTube(),
         {"file": str(video_path), "title": facebook_title,
@@ -159,7 +160,7 @@ def test_preserved_facebook_title_over_youtube_limit_is_rejected_not_truncated(t
             requests.append(kwargs)
             raise AssertionError("an overlong title must not reach YouTube")
 
-    monkeypatch.setattr(app, "MediaFileUpload", lambda *_a, **_k: object())
+    monkeypatch.setattr(pipe, "MediaFileUpload", lambda *_a, **_k: object())
     result = app.upload_video(
         FakeYouTube(),
         {"file": str(video_path), "title": long_title,
