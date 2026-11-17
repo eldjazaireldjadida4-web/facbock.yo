@@ -123,13 +123,13 @@ def test_close_force_exits_when_worker_alive_past_deadline(monkeypatch):
     stub.root = SimpleNamespace(destroy=lambda: destroyed.append(True))
     stub.status_lbl = SimpleNamespace(config=lambda **_kw: None)
 
-    monkeypatch.setattr(app.os, "_exit", fake_exit)
+    monkeypatch.setattr(stub, "_exit_fn", fake_exit)
     stub._finish_close_when_idle()
 
     gate.set()
     worker.join(timeout=5)
     assert destroyed == [True]
-    assert exits == [0]
+    assert exits == [3]
 
 
 def test_close_waits_then_exits_without_busy_worker(monkeypatch):
@@ -148,7 +148,7 @@ def test_close_waits_then_exits_without_busy_worker(monkeypatch):
     stub.root = _Root()
     stub.status_lbl = SimpleNamespace(config=lambda **_kw: None)
     exits = []
-    monkeypatch.setattr(app.os, "_exit", lambda code: exits.append(code))
+    monkeypatch.setattr(stub, "_exit_fn", lambda code: exits.append(code))
     stub._finish_close_when_idle()
 
     assert destroyed == [True]

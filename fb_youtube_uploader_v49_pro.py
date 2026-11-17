@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.14 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.16 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -2651,6 +2651,8 @@ def release_rights_holds_for_auto_mode(items, settings):
 # MAIN APP (V4.0 PRO — WATCH MODE)
 # ════════════════════════════════════════════════════
 class App:
+    # دالة الإنهاء الجبري عند الإغلاق أثناء عمل عامل؛ قابلة للاستبدال في الاختبارات.
+    _exit_fn = staticmethod(os._exit)
     def __init__(self, root):
         self.root = root
         self.root.title(f"FB → YouTube Uploader Pro — v{__version__}")
@@ -3134,8 +3136,9 @@ class App:
         self.root.destroy()
         if busy:
             # العامل غير daemon: تاركًا العملية تعيش بعد destroy() كانت تُبقي
-            # النافذة ميتة والمعالج حيّاً بلا سبب. إنهاء حاسم بعد إغلاق النافذة.
-            os._exit(0)
+            # النافذة ميتة والمعالج حيّاً بلا سبب. إنهاء حاسم بعد إغلاق النافذة،
+            # برمز خروج غير صفري لأن العملية قُطعت قبل إتمامها (قابل للحقن للاختبار).
+            self._exit_fn(3)
 
     # ─────────── بناء الواجهة ───────────
     def _apply_styles(self):

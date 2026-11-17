@@ -50,8 +50,12 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
-      - name: Tests
-        run: python -m pytest -q
+      - name: Tests (summary line required)
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q --tb=short | tee pytest-output.txt
+          grep -qE '[0-9]+ (passed|failed|error)' pytest-output.txt
 
       - name: Dependency audit
         run: pip-audit -r requirements-lock.txt --no-deps --disable-pip

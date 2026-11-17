@@ -26,10 +26,20 @@ if ! .venv/bin/python -m pip install --quiet --disable-pip-version-check -r requ
 fi
 
 echo "Running project tests..."
-if .venv/bin/python -m pytest "$@"; then
-    echo "All tests passed."
-else
-    status=$?
+pytest_out=$(mktemp)
+status=0
+.venv/bin/python -m pytest "$@" 2>&1 | tee "$pytest_out" || status=${PIPESTATUS[0]}
+# حارس الانقطاع الصامت: يجب أن يصل pytest إلى سطر الملخص (مثل "690 passed").
+# إن لم يصل فالتشغيل انقطع (مثلاً عبر os._exit من اختبار) ويُعد فشلاً
+# حتى لو كان رمز خروج pytest صفراً.
+if ! grep -qE '[0-9]+ (passed|failed|error)' "$pytest_out"; then
+    echo "CRITICAL: pytest did not reach a summary line; the run was truncated." >&2
+    rm -f "$pytest_out"
+    exit 3
+fi
+rm -f "$pytest_out"
+if [ "$status" -ne 0 ]; then
     echo "Some tests failed; see the output above." >&2
     exit "$status"
 fi
+echo "All tests passed."

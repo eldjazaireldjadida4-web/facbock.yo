@@ -451,9 +451,12 @@ def test_close_has_a_deadline_instead_of_waiting_forever(monkeypatch) -> None:
 
     instance._thread = _Alive()
     instance.status_lbl = type("L", (), {"config": lambda self, **_kw: None})()
+    exits = []
+    monkeypatch.setattr(instance, "_exit_fn", lambda code: exits.append(code))
     monkeypatch.setattr(app, "CLOSE_WAIT_SECONDS", 0.0)
     instance._close_deadline = time.monotonic() - 1
 
     instance._finish_close_when_idle()
 
     assert instance.root.destroyed is True
+    assert exits == [3]
