@@ -26,6 +26,7 @@ from safe_logging import redact_sensitive_text
 
 APP_VERSION = "4.49.11"
 REPORT_DIRECTORY = "reports"
+YOUTUBE_AUTH_FAILURE_THRESHOLD = 3
 NETWORK_ERROR_MARKERS = (
     "network",
     "timed out",
@@ -89,6 +90,8 @@ CATEGORY_LABELS = {
     "facebook_proxy_unverified": "اتصال الوكيل",
     "proxy_not_configured": "لا يوجد وكيل مضبوط",
     "proxy_unreachable": "الوكيل لا يستجيب",
+    "facebook_port_blocked": "منفذ Facebook محجوب",
+    "youtube_auth_failures": "رمز YouTube مرفوض",
 }
 CATEGORY_GUIDANCE = {
     "rights": "إذا كان الفيديو أصلياً وتملك حقوقه كاملة، اختر أساس owned في الاستوديو > حقوق النشر؛ لا يلزم مرجع إثبات في هذه الحالة. إذا كان الحق بترخيص أو إذن، اختر الأساس المطابق وأدخل مرجعاً حقيقياً. لا تستخدم إقراراً غير صحيح.",
@@ -112,6 +115,8 @@ CATEGORY_GUIDANCE = {
     "facebook_proxy_unverified": "المنفذ يستجيب، لكن يلزم اختبار صفحة Facebook للتأكد من أن الوكيل يصل إلى الوجهة.",
     "content_review": "افتح الاستوديو > مراجعة المحتوى واضبط مجلد OUSSAMA Cutter (وpython إن لزم) أو عطّل الخيار؛ التطبيق يرفض بدء الدورة بهذه الإعدادات.",
     "logs_unreadable": "افحص صلاحيات ملفات السجل في مجلد البرنامج؛ التقرير لم يستطع قراءتها فلا تعتمد على غياب الأخطاء.",
+    "facebook_port_blocked": "يترجم DNS أسماء Facebook لكن اتصال المنفذ 443 يفشل؛ هذا حجب شبكي لا عيب في البرنامج. اختبر من PowerShell بأمر Test-NetConnection www.facebook.com -Port 443، وافحص جدار الحماية أو مزود الخدمة؛ إن كان الاتصال مقيّداً استخدم وكيلاً موثوقاً تملكه من تبويب Facebook ولا تشارك بيانات الدخول.",
+    "youtube_auth_failures": "ملفات التفويض موجودة لكن YouTube رفضها في عمليات متكررة؛ أعد التفويض من تبويب الحسابات ثم شغّل الفحص المسبق من جديد. التقرير لا يقرأ محتوى رموز OAuth.",
 }
 
 
@@ -433,6 +438,7 @@ def collect_diagnostics(app_dir: str, version: str = APP_VERSION, now: datetime 
 
     token_files = list(root.glob("*_token.json"))
     client_secrets = _project_path(root, _cfg(config, "SETTINGS", "CLIENT_SECRETS_FILE", "client_secrets.json"))
+    error_summaries = _error_summaries(root)
     proxy_route = {
         "state": proxy_state,
         "reachable": any(item.get("tcp") == "reachable" for item in (proxy or {}).values()) if proxy else None,
@@ -454,8 +460,15 @@ def collect_diagnostics(app_dir: str, version: str = APP_VERSION, now: datetime 
         issues.append({"category": "content_review", "severity": "error"})
     direct_facebook_reachable = any(item.get("tcp") == "reachable" for item in facebook.values())
     proxy_reachable = bool(proxy and any(item.get("tcp") == "reachable" for item in proxy.values()))
+    # DNS يعمل لكن المنفذ 443 يُرفض أو تنتهي مهلته: حجب شبكي وليس خللاً عاماً.
+    facebook_port_blocked = any(
+        item.get("dns") == "ok" and item.get("tcp") != "reachable" for item in facebook.values()
+    )
     if not direct_facebook_reachable and not proxy_reachable:
-        issues.append({"category": "facebook_network", "severity": "error"})
+        if facebook_port_blocked:
+            issues.append({"category": "facebook_port_blocked", "severity": "error"})
+        else:
+            issues.append({"category": "facebook_network", "severity": "error"})
     if not direct_facebook_reachable and proxy_state == "not_configured":
         issues.append({"category": "proxy_not_configured", "severity": "warning"})
     if proxy_state == "configured" and proxy is not None and not proxy_reachable:
@@ -464,6 +477,10 @@ def collect_diagnostics(app_dir: str, version: str = APP_VERSION, now: datetime 
         issues.append({"category": "facebook_auth", "severity": "warning"})
     if not client_secrets.is_file() or not token_files:
         issues.append({"category": "youtube_auth", "severity": "warning"})
+    else:
+        auth_failures = next((item for item in error_summaries if item["category"] == "youtube_auth"), None)
+        if auth_failures and auth_failures.get("count", 0) >= YOUTUBE_AUTH_FAILURE_THRESHOLD:
+            issues.append({"category": "youtube_auth_failures", "severity": "warning"})
     if free_gb is not None and free_gb < minimum_disk_gb:
         issues.append({"category": "disk", "severity": "error"})
     if not page_counts["enabled"]:
@@ -509,7 +526,7 @@ def collect_diagnostics(app_dir: str, version: str = APP_VERSION, now: datetime 
         "pages": {**page_counts, "state": pages_state},
         "queue": queue,
         "disk": {"free_gb": free_gb, "minimum_gb": minimum_disk_gb},
-        "errors": _error_summaries(root),
+        "errors": error_summaries,
         "unreadable_logs": unreadable_logs,
         "issues": issues,
     }

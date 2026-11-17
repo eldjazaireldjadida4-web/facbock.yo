@@ -168,6 +168,52 @@ def test_collect_diagnostics_aggregates_statuses_without_reading_secret_values(m
     assert "مرجع إثبات" in rendered
     assert "لا يثبت أن Facebook قبل الجلسة" in rendered
 
+def test_collect_diagnostics_distinguishes_blocked_port_from_generic_network_failure(monkeypatch, tmp_path):
+    _write_app_state(tmp_path)
+    blocked = {
+        "IPv4": {"dns": "ok", "addresses": 1, "tcp": "timeout"},
+        "IPv6": {"dns": "dns_failure", "addresses": 0, "tcp": "no_address"},
+    }
+    monkeypatch.setattr(report, "probe_service", lambda *_args, **_kwargs: blocked)
+
+    data = report.collect_diagnostics(str(tmp_path), version="test")
+    rendered = report.format_report(data)
+    categories = {item["category"] for item in data["issues"]}
+
+    assert "facebook_port_blocked" in categories
+    assert "facebook_network" not in categories
+    assert "Test-NetConnection www.facebook.com -Port 443" in rendered
+
+
+def test_collect_diagnostics_flags_repeated_youtube_auth_failures_with_token_present(monkeypatch, tmp_path):
+    _write_app_state(tmp_path)
+    (tmp_path / "errors.log").write_text(
+        "ERROR youtube oauth token rejected\n"
+        "ERROR youtube oauth token invalid_grant\n"
+        "ERROR youtube oauth reauth required\n"
+        "ERROR youtube oauth token rejected again\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report, "probe_service", lambda *_args, **_kwargs: REACHABLE)
+
+    data = report.collect_diagnostics(str(tmp_path), version="test")
+    rendered = report.format_report(data)
+    categories = {item["category"] for item in data["issues"]}
+
+    assert "youtube_auth_failures" in categories
+    assert "youtube_auth" not in categories
+    assert "أعد التفويض من تبويب الحسابات" in rendered
+
+
+def test_youtube_auth_failures_below_threshold_do_not_create_issue(monkeypatch, tmp_path):
+    _write_app_state(tmp_path)
+    (tmp_path / "errors.log").write_text("ERROR youtube oauth token rejected\n", encoding="utf-8")
+    monkeypatch.setattr(report, "probe_service", lambda *_args, **_kwargs: REACHABLE)
+
+    data = report.collect_diagnostics(str(tmp_path), version="test")
+
+    assert "youtube_auth_failures" not in {item["category"] for item in data["issues"]}
+
 
 def test_diagnostic_defaults_are_strict_and_require_manual_review():
     import configparser
