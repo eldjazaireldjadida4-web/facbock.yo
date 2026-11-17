@@ -22,7 +22,8 @@
 | `uploaderrors.py` | تصنيف أخطاء الرفع (`classify_upload_error`، `_http_status`...) |
 | `upload_receipts.py` | إيصالات الرفع وأرشفتها |
 | `file_security.py` | `restrict_file_permissions`، `open_private_append` |
-| `safe_logging.py` | سجلات دوّارة مع تنقيح الأسرار (`redact_sensitive_text`) |
+| `safe_logging.py` | سجلات دوّارة مع تنقيح الأسرار (`redact_sensitive_text`) || `version.py` | المصدر الوحيد لرقم الإصدار (`APP_VERSION`)؛ يستورده الملف الرئيسي و`diagnostic_report` |
+| `state_repair/ledger` | إصلاح ملفات الحالة التالفة (`repair_state_files`) يبقى في الملف الرئيسي لأن اختباراته تخترق ثوابت المسارات على `app` |
 | `local_transcription.py` | تفريغ صوتي محلي اختياري |
 | `notify.py` | إشعارات Telegram الاختيارية |
 | `ai_transcription_cache.py` | ذاكرة التفريغ الصوتي |
@@ -53,6 +54,10 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirement
 .venv/bin/python fb_youtube_uploader_v49_pro.py --preflight   # فحص المتطلبات
 .venv/bin/python fb_youtube_uploader_v49_pro.py --help
 ```
+- `requirements-transcribe.txt`: متطلبات اختيارية (`faster-whisper`) خارج
+  `requirements.txt`؛ التفريغ الصوتي المحلي ميزة اختيارية وتعطّلها لا يمنع
+  التشغيل. لا تُعِدها إلى `requirements.txt` كي لا يفشل تثبيت البيئة الأساسية
+  على أجهزة بلا GPU/نموذج.
 
 - CI (.github/workflows/ci.yml): مصفوفة Windows/Linux × Python 3.12/3.14،
   مع `pip check` و`pip-audit` على `requirements-lock.txt`.
@@ -62,8 +67,12 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirement
 
 ## الحالة الحالية
 
-- آخر التزامات التفكيك: `425b0d0` (media_processing: الشعار والفحص)،
-  `8215be3` (media_processing: الصور المصغّرة وقصّ Shorts)،
-  `6778dab` (upload_pipeline)، `b0c25ea` (تصحيح اختبار).
+- الإصدار الحالي: **4.49.14** (`2938b33`، إصلاحات مراجعة الكود: منع
+  تعطيل مفتاح Gemini عند 403 صلاحيات، تحذير Windows لمرة واحدة، مصدر وحيد
+  للإصدار، نقل `faster-whisper` إلى متطلبات اختيارية، غلق نافذة جبري). CI
+  أخضر على التكوينات الأربعة.
+- التزامات التفكيك: `425b0d0`/`8215be3` (media_processing)،
+  `6778dab` (upload_pipeline)، `193423a` (توثيق البنية).
 - الملف الرئيسي ~8.1k سطراً بعد نزوله من 9.6k؛ القسم المتبقي الأكبر هو
-  صنف `App` (واجهة Tkinter) وهو مقيد بتعاقد الاختبارات أعلاه.
+  صنف `App` (واجهة Tkinter) وهو مقيد بتعاقد الاختبارات أعلاه، وقسم CLI
+  مرتبط باختراق `build_cli_settings` على `app`.
