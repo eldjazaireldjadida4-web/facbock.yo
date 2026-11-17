@@ -1,7 +1,9 @@
 """اختبار إقلاع الواجهة الفعلي تحت Xvfb: بناء النافذة، إيقاف، إغلاق بلا عامل."""
-import sys, time, threading
+import sys
+
 sys.argv = ["fb_youtube_uploader_v49_pro.py"]
-import fb_youtube_uploader_v49_pro as app
+
+import fb_youtube_uploader_v49_pro as app  # noqa: E402  (يجب تعيين sys.argv قبل الاستيراد)
 
 result = {"built": False, "destroyed": False, "os_exit": False, "error": None}
 real_exit = sys.exit
