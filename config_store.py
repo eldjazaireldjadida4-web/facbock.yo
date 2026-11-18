@@ -70,33 +70,6 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _copy_private(source: Path, destination: Path) -> None:
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
-    )
-    temp_path = Path(temporary)
-    try:
-        with source.open("rb") as input_file, os.fdopen(descriptor, "wb") as output_file:
-            descriptor = -1
-            shutil.copyfileobj(input_file, output_file)
-            output_file.flush()
-            os.fsync(output_file.fileno())
-        _secure_mode(temp_path)
-        os.replace(temp_path, destination)
-        _sync_directory(destination.parent)
-    except Exception:
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        try:
-            temp_path.unlink()
-        except OSError:
-            pass
-        raise
-
-
 def _rotate_backups(path: Path, count: int = 3) -> None:
     backup_temp_descriptor, backup_temp_name = tempfile.mkstemp(
         prefix=f".{path.name}.backup.", suffix=".tmp", dir=path.parent

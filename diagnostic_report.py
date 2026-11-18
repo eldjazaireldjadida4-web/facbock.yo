@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import tempfile
+import threading
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -136,22 +137,53 @@ def _error_code(error: BaseException) -> str:
     return "connection_failed"
 
 
+def _resolve_bounded(host: str, port: int, family: int, timeout: float):
+    """يحلّ الاسم ضمن مهلة معلنة؛ getaddrinfo لا تقبل مهلة وقد تعلّق دقائق
+    عند DNS معلّق، فكانت مهلة probe_service المعلنة (للاتصال فقط) مضلّلة
+    والتقرير التشخيصي كله يعلّق. يعيد (عناوين، خطأ، انتهت المهلة؟)."""
+    outcome: dict = {}
+
+    def resolve():
+        try:
+            outcome["value"] = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except OSError as error:
+            outcome["error"] = error
+
+    worker = threading.Thread(target=resolve, daemon=True, name="diagnostic-dns-probe")
+    worker.start()
+    worker.join(max(0.0, timeout))
+    if worker.is_alive():
+        return None, None, True
+    if "error" in outcome:
+        return None, outcome["error"], False
+    return outcome.get("value") or [], None, False
+
+
 def probe_service(host: str, port: int = 443, timeout: float = 10.0) -> dict:
     timeout = max(1.0, min(float(timeout), 15.0))
     results = {}
     for label, family in (("IPv4", socket.AF_INET), ("IPv6", socket.AF_INET6)):
-        try:
-            addresses = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
-        except OSError as error:
+        # نصف مهلة العائلة للحلّ والنصف الآخر للاتصال؛ المجموع لكل عائلة
+        # لا يتجاوز المهلة المعلنة حتى مع DNS معلّق.
+        dns_timeout = max(0.5, timeout / 2)
+        addresses, dns_error, dns_timed_out = _resolve_bounded(host, port, family, dns_timeout)
+        if dns_timed_out:
             results[label] = {
-                "dns": _error_code(error),
+                "dns": "timeout",
+                "addresses": 0,
+                "tcp": "not_tested",
+            }
+            continue
+        if dns_error is not None:
+            results[label] = {
+                "dns": _error_code(dns_error),
                 "addresses": 0,
                 "tcp": "not_tested",
             }
             continue
         unique = []
         seen = set()
-        for address_family, socktype, protocol, _, address in addresses:
+        for address_family, socktype, protocol, _, address in addresses or []:
             key = (address_family, tuple(address))
             if key not in seen:
                 seen.add(key)
@@ -162,7 +194,7 @@ def probe_service(host: str, port: int = 443, timeout: float = 10.0) -> dict:
         failures = []
         connected = False
         candidates = unique[:4]
-        per_address_timeout = max(0.5, timeout / len(candidates))
+        per_address_timeout = max(0.5, (timeout / 2) / len(candidates))
         for address_family, socktype, protocol, address in candidates:
             try:
                 with socket.socket(address_family, socktype, protocol) as connection:

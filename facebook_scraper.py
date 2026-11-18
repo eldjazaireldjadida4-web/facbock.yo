@@ -105,7 +105,11 @@ def _doh_resolve(host: str, port: int, family: int, timeout: float):
                 payload = json.loads(response.read().decode("utf-8", "replace"))
         except (OSError, ValueError, urllib.error.URLError, KeyError, TypeError):
             continue
+        if not isinstance(payload, dict):
+            continue
         for answer in payload.get("Answer") or []:
+            if not isinstance(answer, dict):
+                continue
             data = str(answer.get("data") or "").strip()
             try:
                 if record_type == "AAAA":

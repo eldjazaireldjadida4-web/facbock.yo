@@ -341,8 +341,6 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
 # ════════════════════════════════════════════════════
 # THUMBNAILS / SHORTS CUT / ANALYTICS (v4.11.2)
 # ════════════════════════════════════════════════════
-# THUMBNAILS / SHORTS CUT / ANALYTICS (v4.11.2)
-# ════════════════════════════════════════════════════
 THUMB_WIDTH, THUMB_HEIGHT = 1280, 720
 THUMB_BUDGET_UNITS = 50  # thumbnails.set = 50 وحدة من الحصة العامة
 THUMB_CANDIDATE_COUNT = 6     # عدد اللقطات المرشحة لاختيار أفضل صورة مصغّرة

@@ -89,18 +89,41 @@ def duration_ok(duration, min_sec, max_sec):
     return True, ""
 
 def next_publish_time(min_delay, max_delay):
-    """جدولة تراكمية محفوظة — لا تتداخل مواعيد النشر حتى بين عمليات التشغيل."""
+    """جدولة تراكمية محفوظة — لا تتداخل مواعيد النشر حتى بين عمليات التشغيل.
+
+    الحدود تأتي من config.ini محرَّر يدوياً أحياناً، ومسار CLI لا يمرّ على
+    validate_configuration (يتحقق منه حفظ الواجهة فقط)، فحدّان معكوسان
+    (SCHEDULE_MIN > SCHEDULE_MAX) كانا يُسقطان الدورة بـ ValueError من
+    randint. كذلك طابع state.json التالف/بلا منطقة زمنية كان يرفع TypeError
+    عند المقارنة مع أساس واعٍ. هنا تُطبَّع الحدود وتُفسَّر الساعة الساذجة
+    UTC كما في _receipt_timestamp، فلا يُسقط أيٌّ منهما الدورة.
+    """
+    try:
+        low = int(min_delay)
+    except (TypeError, ValueError, OverflowError):
+        low = 20
+    try:
+        high = int(max_delay)
+    except (TypeError, ValueError, OverflowError):
+        high = 60
+    low = max(0, low)
+    high = max(0, high)
+    if high < low:
+        low, high = high, low
     state = _app_hook("load_state")()
     base = datetime.now(timezone.utc) + timedelta(minutes=5)
     stored = state.get("next_publish_at")
-    if stored:
+    if isinstance(stored, str) and stored:
         try:
             stored_dt = datetime.fromisoformat(stored)
+        except (TypeError, ValueError):
+            stored_dt = None
+        if stored_dt is not None:
+            if stored_dt.tzinfo is None:
+                stored_dt = stored_dt.replace(tzinfo=timezone.utc)
             if stored_dt > base:
                 base = stored_dt
-        except ValueError:
-            pass
-    pub = base + timedelta(minutes=random.randint(min_delay, max_delay))
+    pub = base + timedelta(minutes=random.randint(low, high))
     state["next_publish_at"] = pub.isoformat()
     _app_hook("save_state")(state)
     return pub
@@ -597,12 +620,6 @@ def upload_video(youtube, video_data, privacy="private", playlist_id=None, tags=
                     log_cb(f"رُفع الفيديو؛ تعذّرت إضافة قائمة التشغيل: {error}")
         return video_id
     return UPLOAD_NOT_STARTED
-
-
-def _backoff_seconds(attempt):
-    """تراجع أسّي مع رجّة عشوائية (8 → 24 → 72… بحد 300 ثانية)."""
-    base = min(RETRY_DELAY * (3 ** (attempt - 1)), 300)
-    return base + random.uniform(0, RETRY_DELAY / 2)
 
 
 def verify_upload(youtube, video_id, requested_privacy, sched_time=None, log_cb=None,

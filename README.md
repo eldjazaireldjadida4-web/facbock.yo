@@ -2,9 +2,19 @@
 
 [![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
 
-أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.19**.
+أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.20**.
 
 سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.12 عبر GitHub Actions (`.github/workflows/ci.yml`).
+
+### تقوية الفحوص والجدولة والجلب — 4.49.20
+
+- التقرير التشخيصي لم يعد يعلّق على DNS معلّق: `probe_service` يحلّ الاسم ضمن نصف مهلة العائلة ويصنّف انتهاءها `timeout`، فلا تتجاوز المهلة المعلنة.
+- جدولة النشر لا تُسقط الدورة بعد الآن: حدود `SCHEDULE_MIN/MAX` معكوسة أو غير رقمية من `config.ini` محرَّر يدوياً تُطبَّع بدل `ValueError`، وطابع `next_publish_at` بلا منطقة زمنية يُفسَّر UTC كما في الإيصالات.
+- استعادة `og:title` ترفض أي رابط ليس فيديو Facebook صالحاً قبل أي طلب شبكة (دفاع في العمق ضد SSRF عبر رابط مصدر).
+- حلّ DoH يتجاهل حمولات JSON غير القاموسية وإجابات غير القواميس بدل الانهيار بـ`AttributeError`.
+- فحص أذونات الملفات السرية في `doctor` يقرأ مجلد التطبيق لا مجلد العمل الحالي، و`enable_automation --show` يبلّغ عن الملفات بجانب ملف الإعدادات المحدد.
+- حُذف تعريف `_backoff_seconds` المكرر في `upload_pipeline` والدالة الميتة `_copy_private` في `config_store` والترويسة المكررة في `media_processing`.
+- توثيق: أُزيل إدخال 4.49.16 المكرر من `CHANGELOG.md`، وصُححت تسميات تقارير التحقق في هذه الصفحة (كانت 4.49.11–4.49.13 توصف بأنها «الإصدار الحالي»)؛ الإصدارات 4.49.14–4.49.19 موثقة في `CHANGELOG.md` بلا تقرير تحقق مستقل.
 
 ### استعادة OAuth آمنة — 4.49.13
 
@@ -199,9 +209,10 @@ python -m pytest -q
 - `tests/`: الاختبارات الحالية؛ `tests/fixtures/versions/` لقطات تاريخية تستخدمها اختبارات التوافق فقط.
 - `docs/UPGRADE.md`: نقل الإعدادات والبيانات من تثبيت أقدم.
 - `docs/FIRST_RUN.md`: دليل أول دورة رفع حية، خطوة بخطوة، مبنياً على نتائج فحص مُتحقَّق منها.
-- `docs/validation/FINAL_VALIDATION_4.49.11.md`: نتائج الإصدار الحالي (عنوان المراجعة النهائي).
-- `docs/validation/FINAL_VALIDATION_4.49.12.md`: نتائج الإصدار الحالي (الموافقة والوسوم وإسناد المصدر وفصل OAuth).
-- `docs/validation/FINAL_VALIDATION_4.49.13.md`: تحقق الإصدار الحالي (إعادة التفويض الآمنة عند تصادم ملفات OAuth القديمة).
+- `docs/validation/FINAL_VALIDATION_4.49.20.md`: نتائج الإصدار الحالي (مهلة DNS، جدولة النشر، حارس og:title، ومسارات doctor).
+- `docs/validation/FINAL_VALIDATION_4.49.11.md`: تقرير الإصدار السابق (عنوان المراجعة النهائي).
+- `docs/validation/FINAL_VALIDATION_4.49.12.md`: تقرير الإصدار السابق (الموافقة والوسوم وإسناد المصدر وفصل OAuth).
+- `docs/validation/FINAL_VALIDATION_4.49.13.md`: تقرير الإصدار السابق (إعادة التفويض الآمنة عند تصادم ملفات OAuth القديمة).
 - `docs/validation/FINAL_VALIDATION_4.49.10.md`: تقرير الإصدار السابق (العنوان البديل والقراءة بعد الرفع).
 - `docs/validation/FINAL_VALIDATION_4.49.9.md`: تقرير الإصدار السابق (فحص الجاهزية).
 - `docs/validation/FINAL_VALIDATION_4.49.8.md`: تقرير الإصدار السابق (العنوان والوصف).

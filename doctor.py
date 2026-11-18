@@ -228,8 +228,18 @@ def _collect_checks(add_check, config, config_error, app_directory):
     # 7.5) أذونات الملفات السرية (لينكس/ماك فقط)
     if os.name == "posix":
         import glob as _glob
-        _secret_paths = [secrets_file, cookies_file, "config.ini", "ai_keys.json"]
-        _secret_paths += _glob.glob("*_token.json")
+        # كانت المسارات النسبية هنا ("config.ini" و"ai_keys.json" و"*_token.json")
+        # تُفحص نسبةً إلى مجلد العمل الحالي لا app_directory؛ عند تشغيل
+        # _collect_checks من مجلد آخر (كما في الاختبارات) كان الفحص يقرأ
+        # ملفات المجلد الخطأ أو يفوّت ملفات التطبيق. main() كان يخفي العطل
+        # بـ chdir، لكن المنطق القابل للاختبار يأخذ app_directory صراحةً.
+        _secret_paths = [
+            secrets_file,
+            cookies_file,
+            os.path.join(app_directory, "config.ini"),
+            os.path.join(app_directory, "ai_keys.json"),
+        ]
+        _secret_paths += _glob.glob(os.path.join(app_directory, "*_token.json"))
         for _p in _secret_paths:
             if os.path.isfile(_p):
                 _mode = os.stat(_p).st_mode & 0o777

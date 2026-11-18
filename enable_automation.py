@@ -117,9 +117,12 @@ def show_status(config_path: str | Path) -> str:
     for key in keys:
         lines.append(f"[STUDIO] {key} = {parser.get('STUDIO', key, fallback='(غير مضبوط)').strip()}")
     lines.append(f"[AI] ENABLED = {parser.get('AI', 'ENABLED', fallback='(غير مضبوط)').strip()}")
-    ai_keys = APP_DIR / "ai_keys.json"
-    secrets = APP_DIR / "client_secrets.json"
-    tokens = sorted(APP_DIR.glob("*_token.json"))
+    # حالة الملفات السرية تخص مجلد ملف الإعدادات نفسه، لا مجلد السكربت؛
+    # مع --config في مجلد آخر كان العرض يبلّغ عن ملفات APP_DIR الخطأ.
+    config_dir = Path(config_path).expanduser().resolve().parent
+    ai_keys = config_dir / "ai_keys.json"
+    secrets = config_dir / "client_secrets.json"
+    tokens = sorted(config_dir.glob("*_token.json"))
     lines.append(f"ai_keys.json: {'موجود' if ai_keys.is_file() else 'مفقود — أضف مفتاح Gemini من الواجهة'}")
     lines.append(f"client_secrets.json: {'موجود' if secrets.is_file() else 'مفقود — لا يمكن تسجيل الدخول إلى YouTube بدونه'}")
     lines.append(f"رموز OAuth: {', '.join(p.name for p in tokens) if tokens else 'لا يوجد — سجّل الدخول مرة واحدة من الواجهة'}")

@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.19 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.20 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -2108,6 +2108,13 @@ def _facebook_watch_og_title(url, timeout=20, ydl_opts=None):
     yt-dlp عنواناً عاماً؛ هذه أضمن مصدر للعنوان الأصلي. يعيد نصاً أو فراغاً."""
     target = (url or "").strip()
     if not target:
+        return ""
+    # دفاع في العمق: المتصل الوحيد اليوم يمرّر رابطاً مُطبَّعاً، لكن هذه
+    # الدالة تجلب صفحة عبر الشبكة، فلا يجوز أن تقبل أي رابط يُمرَّر لها
+    # مستقبلاً (رابط خارجي أو عنوان داخلي/بيانات اعتماد في الرابط). يُرفض
+    # كل ما ليس فيديو Facebook صالحاً قبل أي طلب.
+    if canonicalize_facebook_video_url(target) is None:
+        logging.info("رفض جلب og:title من رابط ليس فيديو Facebook صالحاً؛ لن يُرسل طلب مباشر.")
         return ""
     try:
         request = urllib.request.Request(

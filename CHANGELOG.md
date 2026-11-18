@@ -1,3 +1,68 @@
+## 4.49.20 — 2026-11-18
+
+### فحوص لا تعلّق وجدولة لا تُسقط الدورة
+
+- `diagnostic_report.probe_service` كان يستدعي `getaddrinfo` بلا مهلة:
+  عند DNS معلّق يعلّق التقرير التشخيصي كله دقائق رغم مهلة `timeout`
+  المعلنة (كانت تغطي اتصال TCP فقط). الآن يُحلّ الاسم في خيط daemon ضمن
+  نصف مهلة العائلة، وانتهاؤها يُصنَّف `timeout` مع `tcp: not_tested`.
+  - اختبار جديد: `test_probe_service_returns_within_timeout_when_dns_hangs`
+    في `tests/test_hardening_44920.py` (حلّ معلّق للأبد يعود خلال ثانيتين).
+- `upload_pipeline.next_publish_time` كان يُسقط الدورة على إعدادات
+  `config.ini` محرَّرة يدوياً: حدود جدولة معكوسة (`SCHEDULE_MIN` أكبر من
+  `SCHEDULE_MAX`) ترفع `ValueError` من `randint`، وطابع `next_publish_at`
+  بلا منطقة زمنية يرفع `TypeError` عند المقارنة. مسار CLI لا يمرّ على
+  `validate_configuration` (يتحقق منه حفظ الواجهة فقط)، فصارت الحدود
+  تُطبَّع (أعداد صحيحة، حدّ أدنى 0، وتبديل المعكوس) والطابع الساذج يُفسَّر
+  UTC كما في `_receipt_timestamp`، والقيم غير النصية/التالفة تُتجاهل.
+  - اختبارات جديدة: `test_next_publish_time_survives_inverted_bounds`
+    و`test_next_publish_time_survives_naive_and_garbage_stored_value`.
+
+### جلب آمن ومسارات صحيحة
+
+- `_facebook_watch_og_title` كان يجلب أي رابط يُمرَّر له دون تحقق؛ الآن
+  يرفض كل ما ليس فيديو Facebook صالحاً عبر
+  `canonicalize_facebook_video_url` قبل أي طلب شبكة (دفاع في العمق ضد
+  SSRF؛ المتصل الوحيد اليوم يمرّر رابطاً مُطبَّعاً أصلاً).
+  - اختبار جديد: `test_og_title_refuses_non_facebook_url_without_network`.
+- `_doh_resolve` في `facebook_scraper` كان ينهار بـ`AttributeError` إذا
+  أعاد خادم DoH حمولة JSON ليست قاموساً أو إجابات ليست قواميس؛ الآن
+  تُتجاهل هذه الحالات وتُعاد قائمة فارغة (سقوط إلى فشل DNS عادي).
+  - اختبارات جديدة: `test_doh_resolve_ignores_non_dict_payload` و
+    `test_doh_resolve_ignores_non_dict_answers` و
+    `test_doh_resolve_parses_valid_answer`.
+- `doctor._collect_checks` كان يفحص أذونات `"config.ini"` و`"ai_keys.json"`
+  و`"*._token.json"` نسبةً إلى مجلد العمل الحالي لا `app_directory`،
+  فيفوّت ملفات التطبيق أو يقرأ ملفات مجلد آخر؛ صارت كل المسارات مبنية على
+  `app_directory` (`main()` كان يخفي العطل بـ`chdir`).
+  - اختبار جديد: `test_doctor_permission_check_uses_app_directory`.
+- `enable_automation.show_status` كان يبلّغ عن `ai_keys.json` و
+  `client_secrets.json` ورموز OAuth من مجلد السكربت حتى مع `--config` في
+  مجلد آخر؛ صار يستخدم مجلد ملف الإعدادات المحدد.
+  - اختبار جديد: `test_show_status_reports_files_next_to_config`.
+
+### تنظيف وتوثيق
+
+- حُذف تعريف `_backoff_seconds` المكرر (المتطابق) في `upload_pipeline.py`
+  والدالة الميتة `_copy_private` في `config_store.py` (بلا أي مستدعٍ)
+  والترويسة المكررة لقسم الصور المصغّرة في `media_processing.py`.
+- حُذف إدخال `## 4.49.16` المكرر من هذا الملف (كان يظهر مرتين بالمحتوى
+  نفسه تقريباً).
+- صُححت تسميات تقارير التحقق في `README.md` (كانت 4.49.11–4.49.13 توصف
+  بأنها «الإصدار الحالي»)؛ الإصدارات 4.49.14–4.49.19 موثقة هنا بلا تقرير
+  تحقق مستقل.
+- بوابة الحقوق لم تتغير: الوضع الافتراضي `strict` مع المراجعة اليدوية،
+  ولا رفع حي ولا بيانات اعتماد حقيقية في هذا الإصدار.
+
+### التحقق
+
+- **715 اختباراً ناجحاً** (12 جديداً في `tests/test_hardening_44920.py`)،
+  واختباران متخطيان يتطلبان دلالات أذونات POSIX (يعمل التشغيل كـ root).
+  نجح `ruff check` و`compileall` و`pip check`، ولم يجد `pip-audit` ثغرات
+  معروفة في الاعتماديات المقفلة. يعرض `--version` الإصدار `4.49.20`.
+  لا رفع حي ولا تسجيل دخول إلى Facebook أو YouTube في هذا الإصدار.
+
+
 ## 4.49.19 — 2026-11-18
 
 - إصلاح فشل تركيب الشعار على فيديوهات بأبعاد فردية (مثل 851×1277):
@@ -54,19 +119,6 @@
   "N passed" يُعد فشلاً حتى لو كان رمز خروج pytest صفراً.
 - توحيد رقم الإصدار: الشعار في ترويسة الملف الرئيسي و`README.md` أصبحا
   4.49.16 متطابقين مع `version.py`.
-
-## 4.49.16 — 2026-11-17
-
-- حارس سطر الملخص في `run_tests.sh` و`ci.yml`: إن انقطع تشغيل pytest قبل
-  سطر الملخص (مثل انقطاع سابق عبر `os._exit` من اختبار الإغلاق) يُعد
-  التشغيل فشلاً حتى مع رمز خروج صفر — لا نجاح زائف بعد الآن.
-- حقن الخروج في `_finish_close_when_idle`: السمة `_exit_fn` على `App`
-  (افتراضياً `os._exit`) تُستبدل في الاختبارات، ورمز الخروج عند قطع عامل
-  حي أصبح **3** بدل 0 لإظهار أن الإغلاق كان مقاطعة.
-- `test_close_has_a_deadline_instead_of_waiting_forever` لم يعد يُنهي
-  عملية pytest: يخترق `_exit_fn` ويؤكد الرمز.
-- توحيد رقم الإصدار: ترويسة الملف الرئيسي وREADME و`version.py` كلها
-  **4.49.16**.
 
 ## 4.49.15 — 2026-11-18
 
