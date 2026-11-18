@@ -2,9 +2,15 @@
 
 [![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
 
-أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.21**.
+أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.22**.
 
-سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.12 عبر GitHub Actions (`.github/workflows/ci.yml`).
+سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.11 و3.12 و3.14 عبر GitHub Actions (`.github/workflows/ci.yml`).
+
+### دعم Python 3.11 وترقية الاعتماديات — 4.49.22
+
+- مصفوفة CI صارت تشمل Python 3.11 بعد التحقق منه فعلياً: المجموعة الكاملة (716 اختباراً) تعمل تحت Python 3.11.18، وكان الحاجزان الوحيدان في ملف القفل `av==19.0.2` و`numpy==2.5.4` (يتطلبان Python 3.12+)، فصارا مشروطين بعلامة الإصدار (`python_version < "3.12"` يثبّت `av==18.1.0` و`numpy==2.4.6`، و`>= "3.12"` يبقي الإصدارات الحالية)؛ التخفيض الكامل كان سيكسر 3.14 لأن `av==18.1.0` بلا عجلة cp314 عادية.
+- ترقيات آمنة في القفل: `selenium 4.53.0`، و`onnxruntime 1.32.0`، و`google-api-python-client 2.202.0`، و`google-api-core 2.44.0`، و`google-auth 2.62.2`، و`fonttools 4.68.0`، و`arabic-reshaper 3.1.0`، و`ctranslate2 4.9.0`، و`trio 0.35.0`، و`portalocker 4.4.2`، و`numpy 2.5.5` (لـ 3.12+)، وأدوات التطوير `pytest 9.2.0` و`ruff 0.17.5`. `pip-audit` نظيف.
+- اختبار إقلاع الواجهة `gui_boot_smoke.py` نجح تحت `xvfb-run` في بيئة التطوير هذه (في `.venv` الحالي وفي بيئة جديدة من Python النظام) بعد أن كان قيد Tcl/Tk موثقاً كعائق بيئي.
 
 ### إصلاح فشل CI على Windows — 4.49.21
 
@@ -213,7 +219,8 @@ python -m pytest -q
 - `tests/`: الاختبارات الحالية؛ `tests/fixtures/versions/` لقطات تاريخية تستخدمها اختبارات التوافق فقط.
 - `docs/UPGRADE.md`: نقل الإعدادات والبيانات من تثبيت أقدم.
 - `docs/FIRST_RUN.md`: دليل أول دورة رفع حية، خطوة بخطوة، مبنياً على نتائج فحص مُتحقَّق منها.
-- `docs/validation/FINAL_VALIDATION_4.49.21.md`: نتائج الإصدار الحالي (إصلاح فشل CI على Windows).
+- `docs/validation/FINAL_VALIDATION_4.49.22.md`: نتائج الإصدار الحالي (دعم Python 3.11، ترقية الاعتماديات، ونجاح اختبار إقلاع الواجهة).
+- `docs/validation/FINAL_VALIDATION_4.49.21.md`: تقرير الإصدار السابق (إصلاح فشل CI على Windows).
 - `docs/validation/FINAL_VALIDATION_4.49.20.md`: تقرير الإصدار السابق (مهلة DNS، جدولة النشر، حارس og:title، ومسارات doctor).
 - `docs/validation/FINAL_VALIDATION_4.49.11.md`: تقرير الإصدار السابق (عنوان المراجعة النهائي).
 - `docs/validation/FINAL_VALIDATION_4.49.12.md`: تقرير الإصدار السابق (الموافقة والوسوم وإسناد المصدر وفصل OAuth).
