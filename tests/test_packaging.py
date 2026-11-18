@@ -163,6 +163,22 @@ def test_release_workflow_builds_windows_installer() -> None:
     assert "expected 2" in text
 
 
+def test_release_workflow_copies_examples_to_bundle_root() -> None:
+    """The installer sources the examples from the bundle root.
+
+    PyInstaller 6 hides data files under _internal, so after the build
+    the examples only exist at dist\\facbock-yo\\_internal\\. Both build
+    scripts copy them to the bundle root, and the release workflow must
+    do the same — without the copy ISCC aborts the installer build with
+    'Source file ...\\config.ini.example does not exist'.
+    """
+    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "Copy-Item config.ini.example" in text
+    assert "Copy-Item rights_manifest.example.json" in text
+    assert "dist\\facbock-yo\\config.ini.example" in text
+    assert "dist\\facbock-yo\\rights_manifest.example.json" in text
+
+
 def test_build_scripts_exist_and_use_lockfile() -> None:
     for name in ("build_windows.bat", "build_linux.sh"):
         path = ROOT / name
