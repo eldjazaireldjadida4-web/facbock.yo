@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.29 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.30 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -21,7 +21,7 @@ _check_dependencies()
 
 import argparse
 import time, os, re, json, logging, threading, queue, configparser, shutil, hashlib, unicodedata, math
-import subprocess, sys, tempfile
+import subprocess, sys, tempfile, webbrowser
 import html as html_module
 import http.cookiejar
 import urllib.error, urllib.request
@@ -140,6 +140,7 @@ from content_review_bridge import (
     validate_report as validate_content_review,
 )
 from diagnostic_report import write_diagnostic_report
+import updater
 from control_plane import (
     AutomationAlreadyRunning,
     AutomationRunLock,
@@ -2740,6 +2741,9 @@ class App:
         self._sweep_stale_downloads()
         self._poll()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._update_dialog = None
+        self._update_check_running = False
+        self.root.after(5000, self._maybe_check_for_updates)
         if self.autostart_var.get():
             self.root.after(1500, self._autostart_watch)
 
@@ -2766,6 +2770,128 @@ class App:
         self._log("بدء تلقائي للمراقبة (مفعّل في الإعدادات)…")
         self._do_start(True)
 
+    # ─────────── التحديث التلقائي ───────────
+    def _maybe_check_for_updates(self):
+        """فحص تلقائي بعد البدء: مرة في اليوم كحد أقصى، ولا شيء عند إغلاقه في الإعدادات."""
+        if self._closing:
+            return
+        try:
+            if not self.update_check_var.get():
+                return
+        except Exception:
+            return
+        try:
+            state = load_state()
+        except Exception:
+            state = {}
+        if not updater.should_check_now(state.get("last_update_check")):
+            return
+        threading.Thread(target=self._update_check_worker, args=(False,), daemon=True).start()
+
+    def _check_for_updates_manual(self):
+        """فحص يدوي من زر التحديثات في الرأس: يتجاوز حد مرة في اليوم."""
+        if getattr(self, "_update_check_running", False):
+            return
+        self._update_check_running = True
+        self.status_lbl.config(text="جارٍ التحقق من التحديثات…", fg=TXT2)
+        threading.Thread(target=self._update_check_worker, args=(True,), daemon=True).start()
+
+    def _update_check_worker(self, manual):
+        """خيط الفحص: الشبكة هنا فقط؛ كل لمس للواجهة يمر عبر _uiq."""
+        error = []
+        try:
+            info = updater.check_for_update(
+                __version__, on_error=lambda e: error.append(type(e).__name__)
+            )
+        except Exception:
+            info, error = None, ["unexpected"]
+        try:
+            state = load_state()
+            state["last_update_check"] = datetime.now(timezone.utc).isoformat()
+            save_state(state)
+        except Exception:
+            logging.exception("تعذر حفظ وقت آخر فحص للتحديثات")
+        if self._closing:
+            return
+        if info is not None:
+            self._uiq.put(("update_available", info))
+        else:
+            self._uiq.put(("update_check_finished", {"manual": manual, "error": error[0] if error else None}))
+
+    def _show_update_dialog(self, info):
+        """نافذة إصدار جديد: تحميل وتثبيت (مجمّد Windows) أو فتح صفحة الإصدار."""
+        existing = self._update_dialog
+        if existing is not None:
+            try:
+                if existing["window"].winfo_exists():
+                    existing["window"].lift()
+                    return
+            except tk.TclError:
+                pass
+        window = tk.Toplevel(self.root)
+        window.title(f"تحديث متوفر — v{info.version}")
+        window.transient(self.root)
+        window.geometry("640x480")
+        window.minsize(560, 420)
+        tk.Label(
+            window,
+            text=f"إصدار جديد متوفر: v{info.version}  (الحالي v{__version__})",
+            font=("Segoe UI Semibold", 13),
+        ).pack(padx=20, pady=(16, 8), anchor="w")
+        notes = tk.Text(window, wrap="word", height=14)
+        notes.pack(padx=20, fill="both", expand=True)
+        notes.insert("1.0", (info.body or "لا توجد ملاحظات إصدار.").strip()[:1500])
+        notes.configure(state="disabled")
+        status_var = tk.StringVar(value="جاهز للتحميل.")
+        tk.Label(window, textvariable=status_var, fg=TXT2).pack(padx=20, pady=8, anchor="w")
+        buttons = tk.Frame(window)
+        buttons.pack(padx=20, pady=(0, 16), fill="x")
+        can_install = updater.is_frozen() and sys.platform.startswith("win")
+        if can_install:
+            action_btn = Btn(buttons, "تحميل وتثبيت", lambda: self._start_installer_download(info), ACCENT)
+        else:
+            action_btn = Btn(
+                buttons, "فتح صفحة الإصدار",
+                lambda: (webbrowser.open(info.html_url), window.destroy()), ACCENT,
+            )
+        action_btn.pack(side="right")
+        Btn(buttons, "لاحقاً", window.destroy, color="#303050").pack(side="right", padx=10)
+
+        def _on_dialog_close():
+            self._update_dialog = None
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", _on_dialog_close)
+        self._update_dialog = {
+            "window": window,
+            "status_var": status_var,
+            "action_btn": action_btn,
+            "downloading": False,
+        }
+
+    def _start_installer_download(self, info):
+        dlg = self._update_dialog
+        if dlg is None or dlg.get("downloading"):
+            return
+        dlg["downloading"] = True
+        dlg["status_var"].set("جارٍ تنزيل المثبّت…")
+        dlg["action_btn"].config(state="disabled")
+
+        def _progress(downloaded, total):
+            self._uiq.put(("update_download_progress", (downloaded, total)))
+
+        threading.Thread(
+            target=self._installer_download_worker, args=(info, _progress), daemon=True
+        ).start()
+
+    def _installer_download_worker(self, info, progress_cb):
+        try:
+            path = updater.download_installer(info, progress_cb=progress_cb)
+        except Exception as error:
+            self._uiq.put(("update_download_finished", {"error": str(error)}))
+            return
+        self._uiq.put(("update_download_finished", {"path": str(path)}))
+
     # ─────────── حفظ واسترجاع إعدادات الواجهة ───────────
     def _collect_ui_values(self):
         """يجمع كل قيم الواجهة الحالية في قاموس (القسم، المفتاح) → قيمة."""
@@ -2784,6 +2910,7 @@ class App:
             ("SETTINGS", "MAX_ATTEMPTS"): g(self.max_att_e),
             ("SETTINGS", "MIN_DISK_GB"): g(self.disk_e),
             ("SETTINGS", "DRY_RUN"): b(self.dry_run_var),
+            ("SETTINGS", "CHECK_FOR_UPDATES"): b(self.update_check_var),
             ("WATCH", "INTERVAL_MINUTES"): g(self.interval_e),
             ("WATCH", "FAST_SCRAPE"): b(self.fast_scrape_var),
             ("WATCH", "AUTO_START"): b(self.autostart_var),
@@ -2970,6 +3097,8 @@ class App:
                     text(self.disk_e, v)
                 elif (section, key) == ("SETTINGS", "DRY_RUN"):
                     onoff(self.dry_run_var, v)
+                elif (section, key) == ("SETTINGS", "CHECK_FOR_UPDATES"):
+                    onoff(self.update_check_var, v)
                 elif (section, key) == ("WATCH", "INTERVAL_MINUTES"):
                     text(self.interval_e, v)
                 elif (section, key) == ("WATCH", "FAST_SCRAPE"):
@@ -3214,6 +3343,7 @@ class App:
         tk.Label(tl, text=f"مراقبة + استوديو + بوابة أمان + سجل حقوق محكوم  •  v{__version__}",
                  bg=PANEL, fg=TXT2, font=FSM).pack(anchor="w")
         Btn(inner, "الإحصائيات", lambda: self.nb.select(self.t_dash), color="#303050").pack(side="right")
+        Btn(inner, "التحديثات", self._check_for_updates_manual, color="#303050").pack(side="right", padx=(0, 10))
         tk.Frame(self.root, bg=ACCENT, height=2).grid(row=4, column=0, sticky="ew")
 
     def _build_nb(self):
@@ -3667,6 +3797,9 @@ class App:
         self.dry_run_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(inn, text="وضع تجربة: لا يرفع إلى YouTube ولا يحتسب حصة الرفع",
                         variable=self.dry_run_var).pack(anchor="w", pady=4)
+        self.update_check_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(inn, text="التحقق من التحديثات تلقائياً عند فتح البرنامج (مرة في اليوم كحد أقصى)",
+                        variable=self.update_check_var).pack(anchor="w", pady=4)
         self.allow_public_automation_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             inn,
@@ -5444,6 +5577,61 @@ class App:
                 self._reload_ai_tree(statuses)
             if payload.get("error"):
                 self._log(f"توقف اختبار المفاتيح: {payload['error']}")
+        elif event == "update_available":
+            self._update_check_running = False
+            self.status_lbl.config(text=f"تحديث متوفر: v{payload.version}", fg=ACCENT)
+            self._log(f"إصدار جديد متوفر: v{payload.version} — افتح نافذة التحديثات للتحميل.")
+            self._show_update_dialog(payload)
+        elif event == "update_check_finished":
+            self._update_check_running = False
+            if payload.get("manual"):
+                if payload.get("error"):
+                    messagebox.showwarning(
+                        "تعذر التحقق من التحديثات",
+                        "تعذر الوصول إلى GitHub الآن؛ تحقق من الاتصال وحاول لاحقاً.",
+                        parent=self.root,
+                    )
+                else:
+                    messagebox.showinfo(
+                        "لا توجد تحديثات", f"أنت على أحدث إصدار (v{__version__}).", parent=self.root
+                    )
+                self.status_lbl.config(text="جاهز", fg=TXT2)
+        elif event == "update_download_progress":
+            dlg = self._update_dialog
+            if dlg is not None:
+                downloaded, total = payload
+                if total:
+                    dlg["status_var"].set(
+                        f"جارٍ تنزيل المثبّت… {downloaded // (1024 * 1024)} / {total // (1024 * 1024)} MB"
+                    )
+        elif event == "update_download_finished":
+            dlg = self._update_dialog
+            if dlg is None:
+                return
+            dlg["downloading"] = False
+            if payload.get("error"):
+                dlg["status_var"].set("فشل التنزيل")
+                messagebox.showerror("تعذر تنزيل المثبّت", payload["error"], parent=dlg["window"])
+                dlg["action_btn"].config(state="normal")
+                return
+            path = payload["path"]
+            dlg["status_var"].set("تم التنزيل")
+            if messagebox.askyesno(
+                "تثبيت التحديث",
+                "تم تنزيل المثبّت. تثبيته الآن؟ سيُغلق التطبيق.",
+                parent=dlg["window"],
+            ):
+                try:
+                    updater.launch_installer(path)
+                except Exception as error:
+                    messagebox.showerror("تعذر تشغيل المثبّت", str(error), parent=dlg["window"])
+                    dlg["action_btn"].config(state="normal")
+                    return
+                dlg["window"].destroy()
+                self._update_dialog = None
+                self._on_close()
+            else:
+                dlg["action_btn"].config(state="normal")
         elif event == "finished":
             self._finish_worker(payload)
 
@@ -7730,6 +7918,7 @@ UI_KEYS = [
     ("SETTINGS", "MAX_ATTEMPTS", "3"),
     ("SETTINGS", "MIN_DISK_GB", "2"),
     ("SETTINGS", "DRY_RUN", "false"),
+    ("SETTINGS", "CHECK_FOR_UPDATES", "true"),
     ("WATCH", "INTERVAL_MINUTES", "10"),
     ("WATCH", "FAST_SCRAPE", "true"),
     ("WATCH", "AUTO_START", "false"),

@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import fb_youtube_uploader_v49_pro as app
+import version
 from console_encoding import reconfigure_std_streams_utf8
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,7 +128,7 @@ def test_version_exits_0_under_strict_cp1252() -> None:
     assert result.returncode == 0
     _assert_no_encoding_crash(result)
     assert "FB → YouTube Uploader" in result.stdout
-    assert "4.49.29" in result.stdout
+    assert version.APP_VERSION in result.stdout
 
 
 def test_help_exits_0_under_strict_cp1252() -> None:
