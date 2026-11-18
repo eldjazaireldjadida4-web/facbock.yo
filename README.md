@@ -2,9 +2,15 @@
 
 [![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
 
-أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.23**.
+أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.24**.
 
 سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.11 و3.12 و3.14 عبر GitHub Actions (`.github/workflows/ci.yml`).
+
+### إصلاح فشل CI في 4.49.23 — 4.49.24
+
+- اختبار `test_cli_preflight_uses_fingerprinted_oauth_token` كان يعتمد على `config.ini` المحيط: الفحص المسبق صار يستدعي `validate_configuration` منذ 4.49.23، وملف الإعدادات غير موجود في نسخة CI النظيفة (إعدادات فارغة) فيرفض الفحص برمز 2. الاختبار الآن يحاكي `validate_configuration` مثل باقي الفحوصات المحاكاة فيه، وأُضيف اختبار انحدار يثبّت السلوك الإنتاجي المقصود: إعدادات فارغة ترفض برمز 2 مع رسالتَي `VIDEO_DIRECTORY` و`CLIENT_SECRETS_FILE` المطلوبتين.
+- `docs/validation/FINAL_VALIDATION_4.49.24.md`: نتائج الإصدار الحالي (سبب فشل CI وإعادة إنتاجه في نسخة نظيفة، والإصلاح).
+- `docs/validation/FINAL_VALIDATION_4.49.23.md`: تقرير الإصدار السابق (تنقيح كوكيز Netscape، ترتيب أرشفة الإيصالات، التحقق من الإعدادات في CLI، تبريد 400 الفارغ، وأخطاء نظيفة لملفات تالفة).
 
 ### تسريب رمز الجلسة وإصلاحات CLI والأرشيف — 4.49.23
 
@@ -227,7 +233,8 @@ python -m pytest -q
 - `tests/`: الاختبارات الحالية؛ `tests/fixtures/versions/` لقطات تاريخية تستخدمها اختبارات التوافق فقط.
 - `docs/UPGRADE.md`: نقل الإعدادات والبيانات من تثبيت أقدم.
 - `docs/FIRST_RUN.md`: دليل أول دورة رفع حية، خطوة بخطوة، مبنياً على نتائج فحص مُتحقَّق منها.
-- `docs/validation/FINAL_VALIDATION_4.49.23.md`: نتائج الإصدار الحالي (تنقيح كوكيز Netscape، ترتيب أرشفة الإيصالات، التحقق من الإعدادات في CLI، تبريد 400 الفارغ، وأخطاء نظيفة لملفات تالفة).
+- `docs/validation/FINAL_VALIDATION_4.49.24.md`: نتائج الإصدار الحالي (إصلاح فشل CI في 4.49.23 بسبب الاعتماد على `config.ini` المحيط).
+- `docs/validation/FINAL_VALIDATION_4.49.23.md`: تقرير الإصدار السابق (تنقيح كوكيز Netscape، ترتيب أرشفة الإيصالات، التحقق من الإعدادات في CLI، تبريد 400 الفارغ، وأخطاء نظيفة لملفات تالفة).
 - `docs/validation/FINAL_VALIDATION_4.49.22.md`: تقرير الإصدار السابق (دعم Python 3.11، ترقية الاعتماديات، ونجاح اختبار إقلاع الواجهة).
 - `docs/validation/FINAL_VALIDATION_4.49.21.md`: تقرير الإصدار السابق (إصلاح فشل CI على Windows).
 - `docs/validation/FINAL_VALIDATION_4.49.20.md`: تقرير الإصدار السابق (مهلة DNS، جدولة النشر، حارس og:title، ومسارات doctor).

@@ -68,7 +68,14 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirement
 
 ## الحالة الحالية
 
-- الإصدار الحالي: **4.49.23** (إغلاق تسريب رمز جلسة Facebook `xs` إلى
+- الإصدار الحالي: **4.49.24** (إصلاح فشل CI في 4.49.23: اختبار
+  `test_cli_preflight_uses_fingerprinted_oauth_token` كان يعتمد على
+  `config.ini` المحيط، والفحص المسبق صار يستدعي `validate_configuration`
+  منذ 4.49.23 فترفض النسخة النظيفة بلا ملف إعدادات برمز 2؛ الاختبار الآن
+  يحاكي `validate_configuration`، مع اختبار انحدار يثبّت أن الإعدادات
+  الفارغة تُرفض برمز 2 برسالتَي `VIDEO_DIRECTORY` و`CLIENT_SECRETS_FILE`.
+  المجموعة الكاملة 732 ناجحاً واختباران متخطيان تحت 3.12.3 و3.11.18 وفي
+  نسخة نظيفة تحاكي CI). الإصدار السابق **4.49.23** (إغلاق تسريب رمز جلسة Facebook `xs` إلى
   السجلات والتقرير التشخيصي عبر تنقيح سطور كوكيز Netscape في
   `safe_logging.py`؛ ترتيب أرشفة الإيصالات — الأرشيف قبل تقليم النشط؛
   التحقق من الإعدادات `validate_configuration` في فحص CLI المسبق؛

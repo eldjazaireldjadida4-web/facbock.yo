@@ -295,6 +295,12 @@ def test_cli_preflight_uses_fingerprinted_oauth_token(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "load_pages", lambda: [{"enabled": True}])
     monkeypatch.setattr(app, "validate_content_review_settings", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(app, "validate_publication_controls", lambda *_args, **_kwargs: [])
+    # _run_cli_preflight يستدعي validate_configuration على config.ini
+    # المحيط منذ 4.49.23؛ ذلك الملف غير موجود في نسخة CI النظيفة (فارغ)
+    # فيرفض الفحص برمز 2، بينما محلياً يوجد config.ini صالح فيمرّ.
+    # هذا الاختبار يتحقق من مسار رمز OAuth لا من التحقق من الإعدادات،
+    # فلا يعتمد على الإعدادات المحيطة.
+    monkeypatch.setattr(app, "validate_configuration", lambda _cfg: [])
     monkeypatch.setattr(app, "_configure_cli_logger", lambda: Logger())
     settings = {
         "account": "account1",

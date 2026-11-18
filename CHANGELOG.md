@@ -1,3 +1,29 @@
+## 4.49.24 — 2026-11-18
+
+### فشل CI في 4.49.23: اختبار يعتمد على `config.ini` المحيط
+
+- التشغيل 44239844878 فشل في الوظائف الست عند خطوة الاختبارات بينما
+  نجحت المجموعة محلياً في كل البيئات (731 ناجحاً). أُعيد إنتاج الفشل
+  ببناء نسخة نظيفة من الملفات المتعقَّبة فقط (كما في نسخة CI) وتشغيل
+  المجموعة فيها: اختبار واحد سقط هو
+  `tests/test_rights_gate.py::test_cli_preflight_uses_fingerprinted_oauth_token`
+  (يطلب 0 فيحصل على 2 مع `SETTINGS.VIDEO_DIRECTORY مطلوب.` و
+  `SETTINGS.CLIENT_SECRETS_FILE مطلوب.`).
+- السبب: منذ 4.49.23 يستدعي `_run_cli_preflight` دالة
+  `validate_configuration(config)` على الإعدادات المحيطة. محلياً يوجد
+  `config.ini` صالح (ملف متجاهل من git) فيمرّ التحقق، أما في نسخة CI
+  النظيفة فلا يوجد الملف فيعيد `read_config` إعدادات فارغة، فيرفض
+  `validate_configuration` غياب `VIDEO_DIRECTORY` و`CLIENT_SECRETS_FILE`
+  ويرجع الفحص 2. ليس عطلاً إنتاجياً: رفض إعدادات غائبة سلوك مقصود،
+  والمشكلة في الاختبار وحده لأنه لم يحاكِ التحقق من الإعدادات بينما
+  حاكى كل الاعتماديات الأخرى (`load_pages` و`validate_publication_controls`
+  و`validate_content_review_settings`).
+- الإصلاح: الاختبار يحاكي الآن `validate_configuration` ليعيد `[]`،
+  وأُضيف اختبار انحدار
+  `test_cli_preflight_empty_ambient_config_reports_required_settings`
+  يثبّت السلوك الإنتاجي: إعدادات فارغة تُرفض برمز 2 مع رسالتَي الإعدادين
+  المطلوبين. لا تغيير في كود الإنتاج.
+
 ## 4.49.23 — 2026-11-18
 
 ### تسريب رمز جلسة Facebook في السجلات والتقرير التشخيصي (أمني)

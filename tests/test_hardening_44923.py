@@ -75,6 +75,28 @@ def test_diagnostic_excerpt_masks_cookie_line() -> None:
     assert "[REDACTED]" in excerpt
 
 
+def test_cli_preflight_empty_ambient_config_reports_required_settings(monkeypatch, capsys) -> None:
+    """انحدار CI في 4.49.23: نسخة نظيفة بلا config.ini تعطي config فارغاً،
+    فيرفض الفحص المسبق برمز 2 برسالتَي VIDEO_DIRECTORY وCLIENT_SECRETS_FILE
+    المطلوبتين. هذا سلوك إنتاجي مقصود (لا خطأ اختبار)، ويُثبَّت هنا حتى لا
+    يُفسَّر فشله لاحقاً كعطل في CI."""
+    _mock_preflight(monkeypatch)
+    monkeypatch.setattr(app, "config", configparser.ConfigParser())
+    settings = app.build_cli_settings(app.config)
+    settings.update({
+        "account": "account1",
+        "rights_gate_mode": "operator_confirmed",
+        "rights_operator_basis": "owned",
+        "rights_operator_statement": STATEMENT,
+        "rights_operator_evidence": "",
+    })
+
+    assert app._run_cli_preflight(settings) == 2
+    out = capsys.readouterr().out
+    assert "VIDEO_DIRECTORY" in out
+    assert "CLIENT_SECRETS_FILE" in out
+
+
 # ─────────────────────────── أرشيف الإيصالات ───────────────────────────
 def _receipt(source_id: str, confirmed_at: datetime) -> dict:
     return {
