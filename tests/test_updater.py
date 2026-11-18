@@ -10,7 +10,7 @@ import io
 import json
 import urllib.error
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -209,8 +209,18 @@ def test_is_frozen_reads_sys_flag(monkeypatch):
 def test_launch_installer_runs_the_downloaded_file(monkeypatch):
     calls = []
     monkeypatch.setattr(updater.subprocess, "Popen", lambda args: calls.append(args))
-    updater.launch_installer(Path("/tmp/facbock-yo-4.49.30-windows-x86_64-setup.exe"))
-    assert calls == [["/tmp/facbock-yo-4.49.30-windows-x86_64-setup.exe"]]
+    path = Path("/tmp/facbock-yo-4.49.30-windows-x86_64-setup.exe")
+    updater.launch_installer(path)
+    # المسار بصيغة النظام الحالي: '/' على POSIX و'\' على Windows.
+    assert calls == [[str(path)]]
+
+
+def test_launch_installer_passes_windows_path_verbatim(monkeypatch):
+    """محاكاة Windows: مسار PureWindowsPath يمر إلى Popen بشرطاته الخلفية."""
+    calls = []
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda args: calls.append(args))
+    updater.launch_installer(PureWindowsPath(r"C:\Users\test\Downloads\facbock-yo-4.49.30-windows-x86_64-setup.exe"))
+    assert calls == [[r"C:\Users\test\Downloads\facbock-yo-4.49.30-windows-x86_64-setup.exe"]]
 
 
 def test_gui_wiring_update_check_present():
