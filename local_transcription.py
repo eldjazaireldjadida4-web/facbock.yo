@@ -68,6 +68,11 @@ def transcribe_video_file(
     try:
         with _MODEL_LOCK:
             model = _load_model(selected_model)
+            # التنزيل الأول للنموذج (مئات الميغابايت) يجري داخل
+            # _load_model ولا يمكن إلغاؤه أثناء تدفّقه؛ إن طُلب الإيقاف
+            # خلاله، نتوقف هنا قبل بدء أي مقطع بدل متابعة التفريغ.
+            if stop_event is not None and stop_event.is_set():
+                raise TranscriptionCancelled()
             segments, info = model.transcribe(str(path), beam_size=3, vad_filter=True)
             transcript_parts = []
             transcript_length = 0

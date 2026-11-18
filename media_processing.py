@@ -81,8 +81,24 @@ def probe_video(path):
         logging.warning("تعذر تشغيل ffprobe: %s", error)
         return 0, 0, 0.0
 
-LOGO_POSITIONS = {
-    "أعلى اليمين": ("main_w-overlay_w-{m}", "{m}"),
+def durations_match(source_duration, output_duration):
+    """تطابق المدة ضمن max(1 ثانية، 2% من مدة المصدر).
+
+    ملف مبتور يجتاز فحص ffprobe (الترويسة تعلن المدة الكاملة) ثم يخرج
+    أقصر بكثير؛ المقارنة تكشف ذلك. مدة مصدر غير قابلة للقياس (0)
+    تعني تعذّر المقارنة فلا تُرفض.
+    """
+    try:
+        source = float(source_duration or 0)
+        output = float(output_duration or 0)
+    except (TypeError, ValueError):
+        return True
+    if source <= 0:
+        return True
+    return abs(output - source) <= max(1.0, 0.02 * source)
+
+
+LOGO_POSITIONS = {    "أعلى اليمين": ("main_w-overlay_w-{m}", "{m}"),
     "أعلى اليسار": ("{m}", "{m}"),
     "أسفل اليمين": ("main_w-overlay_w-{m}", "main_h-overlay_h-{m}"),
     "أسفل اليسار": ("{m}", "main_h-overlay_h-{m}"),
@@ -248,7 +264,7 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
             log_cb("تعذر تركيب الشعار: FFmpeg غير مثبت. ثبّته وأضفه إلى PATH قبل إعادة المحاولة.")
         return None
     try:
-        video_width, video_height, _ = probe_video(input_path)
+        video_width, video_height, source_duration = probe_video(input_path)
     except Exception as error:
         safe_error = redact_sensitive_text(error)
         if log_cb:
@@ -317,6 +333,16 @@ def apply_logo_overlay(input_path, logo_path, position_name="أعلى اليمي
             logging.warning("ffmpeg logo overlay failed: %s", detail or "no output")
             if log_cb:
                 log_cb(f"فشل تركيب الشعار: {detail or 'لم يُنشأ ملف صالح'}. تحقق من FFmpeg والملف والشعار.")
+            os.unlink(out_path)
+            return None
+        _, _, output_duration = probe_video(out_path)
+        if not durations_match(source_duration, output_duration):
+            logging.warning(
+                "رفض فيديو الشعار: مدة الإخراج %.2f ثانية مقابل %.2f للمصدر؛ الملف مبتور غالباً",
+                output_duration, source_duration,
+            )
+            if log_cb:
+                log_cb("فشل تركيب الشعار: مدة الإخراج أقصر بكثير من المصدر؛ الملف مبتور غالباً.")
             os.unlink(out_path)
             return None
         if os.name == "posix" and not restrict_file_permissions(out_path):
@@ -985,13 +1011,15 @@ def find_hot_segment(rms_by_second, clip_seconds=SHORTS_CLIP_SECONDS,
     span = int(source_duration) if source_duration else (max(rms_by_second) + 1 if rms_by_second else 0)
     if span < min_source or span < clip_seconds:
         return None
+    if not rms_by_second:
+        return None
     last_start = span - clip_seconds
     best_s, best_avg = 0, -1e9
     for s in range(0, last_start + 1):
-        window = [rms_by_second[i] for i in range(s, s + clip_seconds) if i in rms_by_second]
-        if not window:
-            continue
-        avg = sum(window) / len(window)
+        # الثواني الغائبة صمت (-91.0، قيمة -inf نفسها) وتُقسم على طول
+        # النافذة كاملاً: ذروة ثانية واحدة لا تفوز بنافذة 58 ثانية
+        # معظمها غائب (ينتهي الصوت مبكراً).
+        avg = sum(rms_by_second.get(i, -91.0) for i in range(s, s + clip_seconds)) / clip_seconds
         if avg > best_avg:
             best_avg, best_s = avg, s
     if best_avg <= -1e8:
@@ -1047,6 +1075,7 @@ def cut_shorts_clip(source_path, start, duration, out_path=None, log_cb=None):
     try:
         cmd = [ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
                "-ss", str(start_value), "-t", str(duration_value), "-i", source_path,
+               "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                "-c:a", "aac", "-movflags", "+faststart", out_path]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)

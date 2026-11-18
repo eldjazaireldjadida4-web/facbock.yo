@@ -46,6 +46,7 @@ from control_plane import (
     UPLOAD_RESULT_UNKNOWN,
 )
 from file_security import restrict_file_permissions
+from media_processing import durations_match, probe_video
 from texttools import preserve_source_title
 
 
@@ -796,6 +797,19 @@ def finalize_video(path, log_cb=None):
                 "تنظيف الفيديو", "output_permissions_failed",
                 "تعذر تقييد أذونات ملف الإخراج.",
                 "تحقق من صلاحيات المجلد ثم أعد المحاولة.",
+            )
+        _, _, source_duration = probe_video(source_path)
+        _, _, output_duration = probe_video(out_path)
+        if not durations_match(source_duration, output_duration):
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+            raise PipelineFailure(
+                "تنظيف الفيديو", "output_duration_mismatch",
+                f"مدة الإخراج ({output_duration:.2f} ثانية) أقصر بكثير من المصدر "
+                f"({source_duration:.2f} ثانية)؛ الملف مبتور غالباً.",
+                "أعد تنزيل الفيديو كاملاً أو افحص سلامة الملف المصدر قبل إعادة المحاولة.",
             )
         if log_cb:
             log_cb("نُظّف المقطع: faststart + إزالة البيانات الوصفية.")

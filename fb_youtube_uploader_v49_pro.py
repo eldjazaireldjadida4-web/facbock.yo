@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.24 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.25 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -253,7 +253,13 @@ DEFAULT_PAGES = [
      "scroll": 5, "limit": 30, "enabled": True},
 ]
 
-os.makedirs(VIDEO_DIRECTORY, exist_ok=True)
+try:
+    os.makedirs(VIDEO_DIRECTORY, exist_ok=True)
+except (OSError, ValueError) as error:
+    # ملف عادي باسم مجلد الفيديو كان يُسقط الاستيراد كله بتتبّع
+    # FileExistsError قبل أي تحقق أو إصلاح؛ خطأ نظيف برمز 2 بدل ذلك.
+    print(f"توقف التشغيل: تعذر إنشاء مجلد الفيديو {VIDEO_DIRECTORY}: {error}")
+    raise SystemExit(2) from error
 
 import ai_client
 import notify
@@ -679,7 +685,16 @@ def compact_upload_receipts(
         return 0
     archive = load_archived_receipts(archive_path)
     for source_id, record in moved.items():
-        archive.setdefault(source_id, record)
+        existing = archive.get(source_id)
+        if existing is None:
+            archive[source_id] = record
+            continue
+        # إعادة الرفع: الإيصال الأحدث يحلّ محل الأقدم، وإلا اختفى
+        # الإيصال الجديد من الملفين معاً عند التقليم الثاني.
+        moved_stamp = _receipt_timestamp(record)
+        existing_stamp = _receipt_timestamp(existing)
+        if moved_stamp is not None and (existing_stamp is None or moved_stamp > existing_stamp):
+            archive[source_id] = record
     # الأرشيف أولاً ثم تقليم النشط: إن فشلت كتابة الأرشيف (قرص ممتلئ،
     # صلاحيات) تبقى الإيصالات في الملف النشط ولا تُفقد من الملفين معاً.
     _write_json(archive_path, {"schema_version": 1, "receipts": archive})
@@ -1551,14 +1566,14 @@ def _selenium_proxy_server(proxy_url):
         port = proxy.port
     except ValueError as error:
         raise ValueError("صيغة وكيل المتصفح غير صالحة؛ استخدم عنواناً بلا بيانات دخول.") from error
-    if scheme not in {"http", "https", "socks5", "socks5h"} or not host:
-        raise ValueError("صيغة وكيل المتصفح غير صالحة؛ استخدم http أو https أو socks5.")
+    if scheme not in {"http", "https", "socks4", "socks5", "socks5h"} or not host:
+        raise ValueError("صيغة وكيل المتصفح غير صالحة؛ استخدم http أو https أو socks4 أو socks5.")
     if proxy.username or proxy.password:
         raise ValueError("وكيل المتصفح لا يقبل بيانات دخول داخل الرابط؛ استخدم وكيلاً محلياً موثوقاً بلا مصادقة.")
     if proxy.path not in {"", "/"} or proxy.query or proxy.fragment:
         raise ValueError("عنوان وكيل المتصفح يجب أن يقتصر على المخطط والمضيف والمنفذ.")
     if not port:
-        port = 443 if scheme == "https" else 1080 if scheme.startswith("socks5") else 80
+        port = 443 if scheme == "https" else 1080 if scheme.startswith("socks") else 80
     display_host = f"[{host}]" if ":" in host else host
     display_scheme = "socks5" if scheme == "socks5h" else scheme
     return f"{display_scheme}://{display_host}:{port}"
@@ -3883,7 +3898,7 @@ class App:
             network_inner,
             text=(
                 "يُمنح IPv4 وIPv6 كامل المهلة كلٌّ على حدة. استخدم فقط وكيلاً محلياً تملكه أو تثق به "
-                "(http/https/socks5)؛ لا تضع اسم مستخدم أو كلمة مرور في العنوان."
+                "(http/https/socks4/socks5)؛ لا تضع اسم مستخدم أو كلمة مرور في العنوان."
             ),
             bg=CARD,
             fg=TXT2,
@@ -6454,7 +6469,13 @@ class App:
             # ─── حصة الرفع مشتركة بين كل الحسابات المرتبطة بمشروع API ───
             if not settings.get("dry_run") and not ctx["quota"].can_afford():
                 if watch_mode:
-                    self._wait_for_quota_reset(ctx["quota"])
+                    if not self._wait_for_quota_reset(ctx["quota"]):
+                        # طُلب الإيقاف أثناء انتظار التصفير: لا مراجعة محتوى
+                        # (قد تستغرق ساعة ونصف) ولا رفع؛ أعد العنصر وباقي
+                        # القائمة ثم اخرج من الدورة.
+                        self._cleanup_file(video_data, branded_path)
+                        self._requeue_unprocessed(failed_q, process_list[index - 1:])
+                        break
                 else:
                     self._log("اكتمل حد الرفع اليومي — أُوقف التشغيل اليدوي. فعّل المراقبة للاستئناف بعد إعادة الضبط.")
                     self._cleanup_file(video_data, branded_path)
@@ -6761,7 +6782,11 @@ class App:
                 self._cleanup_file(video_data, branded_path)
                 self._handle_failure(failed_q, seen_ids, item, "رفض الحصة", settings, count_attempt=False)
                 if watch_mode:
-                    self._wait_for_quota_reset(ctx["quota"])
+                    if not self._wait_for_quota_reset(ctx["quota"]):
+                        # طُلب الإيقاف أثناء انتظار التصفير: أعد باقي القائمة
+                        # واخرج بدل متابعة العنصر التالي.
+                        self._requeue_unprocessed(failed_q, process_list[index:])
+                        break
                 else:
                     self._requeue_unprocessed(failed_q, process_list[index:])
                     break
@@ -7431,11 +7456,25 @@ class App:
         cache = state.get("ai_cache", {})
         transcript = str(video_data.get("transcript") or "").strip()
         transcript_hash = hashlib.sha256(transcript.encode("utf-8")).hexdigest() if transcript else ""
+        hint = "\n".join(top_performing_titles(3, min_views=100))
+        # بصمة كل مدخلات المطالبة: عنوان أو أسلوب أو نموذج متغيّر يجب أن
+        # يعيد التوليد بدل إعادة استخدام وصف/وسوم الجيل الأول.
+        prompt_fingerprint = hashlib.sha256("\n".join([
+            str(video_data.get("title", "")),
+            str(video_data.get("desc", "")),
+            str(settings.get("ai_model", GEMINI_MODELS[0])),
+            str(settings.get("ai_style", "احترافي متوازن")),
+            "1" if settings.get("preserve_facebook_title", True) else "0",
+            hint,
+        ]).encode("utf-8")).hexdigest()
         cached = cache.get(item["id"])
-        if isinstance(cached, dict) and cached.get("_transcript_hash", "") == transcript_hash:
+        if (
+            isinstance(cached, dict)
+            and cached.get("_transcript_hash", "") == transcript_hash
+            and cached.get("_prompt_hash", "") == prompt_fingerprint
+        ):
             self._log("بيانات AI من الذاكرة (سبق توليدها لهذا المقطع)")
             return cached
-        hint = "\n".join(top_performing_titles(3, min_views=100))
         meta = ai_generate_metadata(
             video_data.get("title", ""), video_data.get("desc", ""),
             item.get("page", ""), video_data.get("duration", 0),
@@ -7444,7 +7483,8 @@ class App:
             performance_hint=hint, transcript_text=transcript,
             preserve_title=bool(settings.get("preserve_facebook_title", True)))
         if meta:
-            stored_meta = {**meta, "_transcript_hash": transcript_hash}
+            stored_meta = {**meta, "_transcript_hash": transcript_hash,
+                           "_prompt_hash": prompt_fingerprint}
             cache[item["id"]] = stored_meta
             while len(cache) > 1500:
                 cache.pop(next(iter(cache)))
@@ -7612,11 +7652,15 @@ class App:
         return False
 
     def _wait_for_quota_reset(self, quota):
+        """ينتظر تصفير الحصة؛ يعيد False إن طُلب الإيقاف أثناء الانتظار."""
         wait_s = quota.seconds_until_reset()
         self._log(f"حصة يوتيوب اليومية مستنفدة — استئناف تلقائي بعد التصفير "
                   f"(منتصف الليل بتوقيت المحيط الهادئ، بعد ~{wait_s // 3600} ساعة)")
         self._countdown_wait(wait_s, "تصفير الحصة بعد")
+        if self._stop.is_set():
+            return False
         quota._refresh()
+        return True
 
     def _finish_worker(self, result):
         if self._closing:
@@ -8051,27 +8095,83 @@ def run_cli(dry_run=False, once=False, preflight_only=False):
         interrupted = True
     return automation_exit_code(shim._uiq.result, interrupted=interrupted)
 
+def _validate_receipts_store(value):
+    """يطابق فحوص load_upload_receipts البنيوية حرفياً."""
+    if not isinstance(value, dict):
+        return False
+    if value.get("schema_version") != 1 or not isinstance(value.get("receipts"), dict):
+        return False
+    for source_id, record in value["receipts"].items():
+        if not isinstance(source_id, str) or not source_id.strip() or not isinstance(record, dict):
+            return False
+        if extract_youtube_video_id(str(record.get("youtube_id") or "")) is None:
+            return False
+        if record.get("source_id") != source_id:
+            return False
+    return True
+
+
+def _validate_failed_queue(value):
+    """يطابق فحوص load_failed_queue البنيوية حرفياً."""
+    return isinstance(value, list) and all(
+        isinstance(item, dict)
+        and str(item.get("id") or "").strip()
+        and str(item.get("url") or "").strip()
+        for item in value
+    )
+
+
+def _validate_accounts(value):
+    """يطابق فحوص load_accounts البنيوية حرفياً."""
+    return isinstance(value, list) and all(
+        isinstance(account, str) and account.strip() for account in value
+    )
+
+
+def _validate_rights_manifest(value):
+    """يطابق فحوص content_safety._read_manifest_file البنيوية.
+
+    load_rights_manifest نفسه لا يصلح مدقّقاً لكل مرشّح: يقبل مساراً
+    لا قيمة، ويسقط تلقائياً إلى .bak عند تلف الأساسي، فيخفي تلف
+    المرشّح نفسه عن _ledger_state.
+    """
+    return isinstance(value, dict) and isinstance(value.get("items"), dict)
+
+
+def _validate_top_level(expected_type):
+    def validator(value):
+        return isinstance(value, expected_type)
+
+    return validator
+
+
 STATE_LEDGERS = (
-    ("failed_queue.json", lambda: FAILED_QUEUE_FILE, list),
-    ("upload_receipts.json", lambda: UPLOAD_RECEIPTS_FILE, dict),
-    ("pages.json", lambda: PAGES_FILE, list),
-    ("accounts.json", lambda: ACCOUNTS_FILE, list),
-    ("state.json", lambda: STATE_FILE, dict),
-    ("channel_video_index.json", lambda: CHANNEL_INDEX_FILE, dict),
+    ("failed_queue.json", lambda: FAILED_QUEUE_FILE, list, _validate_failed_queue),
+    ("upload_receipts.json", lambda: UPLOAD_RECEIPTS_FILE, dict, _validate_receipts_store),
+    ("pages.json", lambda: PAGES_FILE, list, _validate_top_level(list)),
+    ("accounts.json", lambda: ACCOUNTS_FILE, list, _validate_accounts),
+    ("state.json", lambda: STATE_FILE, dict, _validate_top_level(dict)),
+    ("channel_video_index.json", lambda: CHANNEL_INDEX_FILE, dict, _validate_top_level(dict)),
+    ("rights_manifest.json", lambda: RIGHTS_MANIFEST_FILE, dict, _validate_rights_manifest),
 )
 
 
-def _ledger_state(path, expected_type):
+def _ledger_state(path, expected_type, validator=None):
     """ok / backup_ok / corrupt / missing — بلا تعديل أي ملف."""
     if not os.path.exists(path):
         return "missing"
+    check = validator or _validate_top_level(expected_type)
     for index, candidate in enumerate([path] + [f"{path}.bak{i}" for i in range(1, 4)]):
         try:
             with open(candidate, "r", encoding="utf-8") as source:
                 value = json.load(source)
         except (OSError, ValueError):
             continue
-        if isinstance(value, expected_type):
+        try:
+            valid = bool(check(value))
+        except Exception:
+            continue
+        if valid:
             return "ok" if index == 0 else "backup_ok"
     return "corrupt"
 
@@ -8083,9 +8183,9 @@ def repair_state_files(*, dry_run=False):
     مخرج كان المستخدم أمامه خيار واحد: حذف الملف يدوياً وفقدان سجل الإيصالات.
     """
     actions = []
-    for name, path_getter, expected_type in STATE_LEDGERS:
+    for name, path_getter, expected_type, validator in STATE_LEDGERS:
         path = os.fspath(path_getter())
-        state = _ledger_state(path, expected_type)
+        state = _ledger_state(path, expected_type, validator)
         if state == "corrupt":
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             target = f"{path}.corrupt-{stamp}"
@@ -8120,6 +8220,11 @@ def _repair_state_cli():
         print(
             "تنبيه: عزل upload_receipts.json يُلغي سجل منع إعادة الرفع. "
             "لا ترفع مصدراً قديماً قبل مراجعة YouTube Studio."
+        )
+    if any(action["file"] == "rights_manifest.json" for action in actions):
+        print(
+            "تنبيه: عزل rights_manifest.json يُلغي سجل الحقوق. "
+            "لا ترفع مصدراً قديماً قبل مراجعة النسخة المعزولة وإعادة إقرار الحقوق."
         )
     return 2 if failed else 0
 

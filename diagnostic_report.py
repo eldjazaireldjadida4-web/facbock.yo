@@ -218,6 +218,10 @@ def _load_config(root: Path):
     try:
         if not path.is_file():
             return parser, "missing"
+        if path.is_symlink():
+            # config_store يرفض الروابط الرمزية ويرفع ConfigRecoveryError؛
+            # التقرير يجب أن يراها تالفة لا صالحة.
+            raise OSError("symbolic-link configuration files are not accepted")
         with path.open("r", encoding="utf-8") as stream:
             parser.read_file(stream)
         migrate_legacy_rights_gate_config(parser)
@@ -251,9 +255,9 @@ def _proxy_endpoint(proxy_value: str):
     try:
         parsed = urlsplit(value)
         scheme = parsed.scheme.lower()
-        if scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+        if scheme not in {"http", "https", "socks4", "socks5", "socks5h"} or not parsed.hostname:
             return "invalid", None, None
-        port = parsed.port or (443 if scheme == "https" else 1080 if scheme.startswith("socks5") else 80)
+        port = parsed.port or (443 if scheme == "https" else 1080 if scheme.startswith("socks") else 80)
         return "configured", parsed.hostname, port
     except ValueError:
         return "invalid", None, None

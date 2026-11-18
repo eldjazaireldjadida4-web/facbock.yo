@@ -85,7 +85,9 @@ def test_compaction_is_idempotent_and_keeps_the_archive(tmp_path: Path) -> None:
     assert "old" in archived
 
 
-def test_archive_merge_never_overwrites_an_existing_entry(tmp_path: Path) -> None:
+def test_archive_merge_keeps_the_newer_entry(tmp_path: Path) -> None:
+    """4.49.25: الإيصال الأحدث يحلّ محل الأقدم عند الدمج؛ setdefault القديم
+    كان يُبقي القديم ويُسقط الجديد من الملفين معاً عند إعادة الرفع."""
     now = datetime.now(timezone.utc)
     receipts_file, archive_file = _seed(tmp_path, now)
     archive_file.write_text(json.dumps({"schema_version": 1, "receipts": {
@@ -95,7 +97,23 @@ def test_archive_merge_never_overwrites_an_existing_entry(tmp_path: Path) -> Non
     app.compact_upload_receipts(path=str(receipts_file), archive_path=str(archive_file), now=now)
 
     archived = json.loads(archive_file.read_text(encoding="utf-8"))["receipts"]
-    assert archived["old"]["title"] == "السجل الأصلي"
+    # المنقول أحدث (400 يوم) من المؤرشف (900 يوم) فيحلّ محله.
+    assert archived["old"]["confirmed_at"] == (now - timedelta(days=400)).isoformat(timespec="seconds")
+    assert "title" not in archived["old"]
+
+
+def test_archive_merge_never_overwrites_a_newer_entry(tmp_path: Path) -> None:
+    """إيصال منقول أقدم من المؤرشف لا يمحو الأحدث."""
+    now = datetime.now(timezone.utc)
+    receipts_file, archive_file = _seed(tmp_path, now)
+    archive_file.write_text(json.dumps({"schema_version": 1, "receipts": {
+        "old": {**_receipt("old", now - timedelta(days=100)), "title": "السجل الأحدث"},
+    }}), encoding="utf-8")
+
+    app.compact_upload_receipts(path=str(receipts_file), archive_path=str(archive_file), now=now)
+
+    archived = json.loads(archive_file.read_text(encoding="utf-8"))["receipts"]
+    assert archived["old"]["title"] == "السجل الأحدث"
 
 
 def test_zero_age_disables_compaction(tmp_path: Path) -> None:

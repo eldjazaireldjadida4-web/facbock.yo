@@ -171,7 +171,13 @@ def _main_inner(args) -> int:
         if answer not in {"نعم", "y", "Y", "yes"}:
             print("أُلغي التطبيق؛ لم يُعدَّل شيء.")
             return 1
-    apply_automation_profile(args.config, args.basis, args.statement, args.evidence)
+    try:
+        apply_automation_profile(args.config, args.basis, args.statement, args.evidence)
+    except OSError as error:
+        # قرص ممتلئ أو مجلد للقراءة فقط: خطأ نظيف برمز 2 بدل تتبّع
+        # استثناء؛ الكتابة ذرية فالملف يبقى سليم البنية.
+        print(f"تعذرت كتابة config.ini: {error}؛ لم يُطبَّق شيء", file=sys.stderr)
+        return 2
     print("\nتم تطبيق الوضع الآلي. ما يلزمك أيضاً:")
     print("- مفتاح Gemini في ai_keys.json (من الواجهة) وإلا ستُستخدم العناوين كما هي.")
     print("- تسجيل دخول YouTube مرة واحدة (client_secrets.json + رمز الحساب).")

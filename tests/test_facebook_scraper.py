@@ -139,11 +139,18 @@ def test_proxy_preflight_uses_http_default_port_and_honors_explicit_port(monkeyp
         calls.append((address, timeout))
         return Connection()
 
+    def fake_getaddrinfo(host, port, family, socktype):
+        # الحلّ المحدود أولاً (4.49.25): الاتصال يتم إلى العنوان المحلول لا الاسم.
+        return [(family, facebook_scraper.socket.SOCK_STREAM, 6, "", ("203.0.113.8", port))]
+
     monkeypatch.setattr(facebook_scraper.socket, "create_connection", fake_connection)
+    monkeypatch.setattr(facebook_scraper.socket, "getaddrinfo", fake_getaddrinfo)
 
     assert facebook_network_reachable("http://proxy.example", timeout=1)
     assert facebook_network_reachable("http://proxy.example:3128", timeout=1)
-    assert calls == [(('proxy.example', 80), 1.0), (('proxy.example', 3128), 1.0)]
+    assert [address for address, _timeout in calls] == [
+        ("203.0.113.8", 80), ("203.0.113.8", 3128)]
+    assert all(0 < timeout <= 1.0 for _address, timeout in calls)
 
 
 def test_preferred_ipv4_route_gives_ipv4_and_ipv6_a_full_timeout(monkeypatch):

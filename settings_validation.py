@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import configparser
 import math
+import os
 from urllib.parse import urlsplit
 
 from content_safety import RIGHTS_BASIS_LABELS, validate_automatic_rights_settings
@@ -130,6 +131,14 @@ def validate_configuration(cfg: configparser.ConfigParser) -> list[str]:
     for section, key in (("SETTINGS", "VIDEO_DIRECTORY"), ("SETTINGS", "CLIENT_SECRETS_FILE")):
         if not _get(cfg, section, key):
             errors.append(f"{section}.{key} مطلوب.")
+    video_directory = _get(cfg, "SETTINGS", "VIDEO_DIRECTORY")
+    if video_directory:
+        # ملف عادي بهذا الاسم كان يُسقط استيراد التطبيق قبل أي تحقق؛
+        # المسار النسبي يُحلّ مقابل الدليل الحالي كما يفعل التطبيق
+        # عند التشغيل من مجلد المشروع.
+        candidate = video_directory if os.path.isabs(video_directory) else os.path.abspath(video_directory)
+        if os.path.lexists(candidate) and not os.path.isdir(candidate):
+            errors.append("SETTINGS.VIDEO_DIRECTORY موجود لكنه ليس مجلداً؛ اختر مجلداً صالحاً.")
     privacy = _get(cfg, "SETTINGS", "PRIVACY", "private").lower()
     if privacy not in {"private", "unlisted", "public"}:
         errors.append("SETTINGS.PRIVACY يجب أن تكون private أو unlisted أو public.")
@@ -146,6 +155,14 @@ def validate_configuration(cfg: configparser.ConfigParser) -> list[str]:
     transcription_model = _get(cfg, "AI", "TRANSCRIPTION_MODEL", "base").lower()
     if transcription_model not in LOCAL_TRANSCRIPTION_MODELS:
         errors.append("AI.TRANSCRIPTION_MODEL يجب أن تكون tiny أو base أو small.")
+    ai_model = _get(cfg, "AI", "MODEL", "").strip()
+    if ai_model:
+        # استيراد مؤجّل: ai_client لا يعتمد على هذا الملف، لكنه يبقي
+        # التحقق مستقلاً عن ترتيب الاستيراد.
+        from ai_client import GEMINI_MODELS
+
+        if ai_model not in GEMINI_MODELS:
+            errors.append(f"AI.MODEL غير مدعوم؛ القيم المقبولة: {', '.join(GEMINI_MODELS)}.")
 
     if len(tags) > 500:
         errors.append("STUDIO.TAGS يتجاوز حد YouTube البالغ 500 حرف.")

@@ -146,7 +146,7 @@ def facebook_network_route_detailed(
             scheme = proxy.scheme.lower()
             port = proxy.port
             if (
-                scheme not in {"http", "https", "socks5", "socks5h"}
+                scheme not in {"http", "https", "socks4", "socks5", "socks5h"}
                 or not proxy.hostname
                 or proxy.username is not None
                 or proxy.password is not None
@@ -156,9 +156,24 @@ def facebook_network_route_detailed(
                 or (port is not None and not 1 <= port <= 65535)
             ):
                 return None, {"dns": [], "connect": [], "proxy": "invalid"}
-            port = port or (443 if scheme == "https" else 1080 if scheme.startswith("socks5") else 80)
-            with socket.create_connection((proxy.hostname, port), timeout=timeout):
-                return "proxy", None
+            port = port or (443 if scheme == "https" else 1080 if scheme.startswith("socks") else 80)
+            # حلّ DNS محدود المهلة أولاً: مهلة create_connection تقيّد
+            # TCP فقط، وgetaddrinfo داخلها بلا مهلة. النصف الأول للحلّ
+            # والنصف الثاني للاتصال، كما في probe_service.
+            deadline = time.monotonic() + timeout
+            resolved = _resolve_bounded(
+                proxy.hostname, port, socket.AF_UNSPEC, max(0.5, timeout / 2)
+            )
+            if not resolved:
+                return None, {"dns": [], "connect": [], "proxy": "unreachable"}
+            remaining = max(0.5, deadline - time.monotonic())
+            for _family, _socktype, _proto, _canon, sockaddr in resolved:
+                try:
+                    with socket.create_connection(sockaddr, timeout=remaining):
+                        return "proxy", None
+                except (OSError, ValueError):
+                    continue
+            return None, {"dns": [], "connect": [], "proxy": "unreachable"}
         except (OSError, ValueError):
             return None, {"dns": [], "connect": [], "proxy": "unreachable"}
 

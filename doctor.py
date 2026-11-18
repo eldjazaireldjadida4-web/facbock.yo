@@ -47,6 +47,10 @@ def _load_config(app_directory):
     error = None
     config_path = os.path.join(app_directory, "config.ini")
     try:
+        if os.path.islink(config_path):
+            # config_store يرفض الروابط الرمزية ويرفع ConfigRecoveryError
+            # فيخرج التطبيق برمز 2؛ الطبيب يجب أن يراها BAD لا OK.
+            raise OSError("symbolic-link configuration files are not accepted")
         # read() يبتلع OSError ويعيد قائمة فارغة، فيظهر «الملف موجود» مع أن
         # كل القيم المقروءة افتراضية. الفتح الصريح يجعل فشل الصلاحية مرئياً.
         with open(config_path, "r", encoding="utf-8") as handle:
@@ -248,7 +252,11 @@ def _collect_checks(add_check, config, config_error, app_directory):
                               "نفّذ: chmod 600 " + _p)
 
     # 8) ربط قناة YouTube (ملف التوكن)
-    tokens = sorted(n for n in os.listdir(app_directory) if n.endswith("_token.json"))
+    tokens = sorted(
+        n for n in os.listdir(app_directory)
+        if n.endswith("_token.json")
+        and os.path.isfile(os.path.join(app_directory, n))
+    )
     if tokens:
         add_check("ربط قناة YouTube", OK, "تم العثور على: " + ", ".join(tokens))
     else:
@@ -279,12 +287,16 @@ def _collect_checks(add_check, config, config_error, app_directory):
             add_check("بوابة الحقوق", BAD, f"قيمة غير معروفة: {_gate_mode}", "استخدم strict أو operator_confirmed")
 
     # 9) config.ini
-    if os.path.exists(os.path.join(app_directory, "config.ini")):
+    config_path = os.path.join(app_directory, "config.ini")
+    if os.path.isfile(config_path) and not os.path.islink(config_path):
         if not config_error:
             add_check("ملف config.ini", OK, "موجود")
         else:
             add_check("ملف config.ini", BAD, f"موجود لكن تعذّرت قراءته: {config_error}",
                       "افحص صلاحيات الملف وترميزه؛ القيم المقيمة أدناه افتراضية وليست من ملفك")
+    elif os.path.islink(config_path):
+        add_check("ملف config.ini", BAD, "رابط رمزي؛ التطبيق يرفض ملفات الإعدادات الرمزية",
+                  "استبدل الرابط الرمزي بنسخة حقيقية من config.ini")
     else:
         add_check("ملف config.ini", INFO, "غير موجود — ستُستخدم القيم الافتراضية",
                   "انسخ config.ini.example إلى config.ini إن أردت تخصيص المسارات")

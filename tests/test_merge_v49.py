@@ -505,6 +505,12 @@ def test_finalize_video_success_returns_cleaned(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(app.shutil, "which", lambda _name: "/fake/ffmpeg")
 
     def fake_run(cmd, **_kwargs):
+        if cmd[0] == "ffprobe":
+            # finalize_video (4.49.25) يقيس مدة المصدر والإخراج عبر ffprobe.
+            return SimpleNamespace(
+                returncode=0, stderr="",
+                stdout='{"streams": [{"width": 640, "height": 360}], '
+                       '"format": {"duration": "10.0"}}')
         Path(cmd[-1]).write_bytes(b"cleaned")
         return SimpleNamespace(returncode=0, stderr="")
 
