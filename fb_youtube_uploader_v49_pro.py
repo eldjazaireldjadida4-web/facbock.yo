@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.27 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.28 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -28,6 +28,7 @@ import urllib.error, urllib.request
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from config_store import ConfigRecoveryError, read_config, write_config_atomically
+from console_encoding import reconfigure_std_streams_utf8
 from file_security import open_private_append, restrict_file_permissions
 from pipeline_errors import PipelineFailure
 from upload_pipeline import (
@@ -8275,6 +8276,9 @@ def gui_main():
 
 
 def main(argv=None):
+    # طرفية Windows افتراضياً cp1252: أعد التهيئة قبل أن يطبع argparse
+    # --version/--help (العربية و"→" تُسقطان التطبيق بـ UnicodeEncodeError).
+    reconfigure_std_streams_utf8()
     parser = argparse.ArgumentParser(
         prog="fb-youtube-uploader",
         description="أداة سطح مكتب لمراجعة ورفع الفيديوهات، مع وضع CLI اختياري.",

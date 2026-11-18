@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 from config_store import ConfigRecoveryError, read_config, write_config_atomically
+from console_encoding import reconfigure_std_streams_utf8
 
 def _resolve_app_dir() -> Path:
     """مجلد البرنامج: في النسخة المجمّدة يشير ``__file__`` إلى ``_internal``،
@@ -138,6 +139,8 @@ def show_status(config_path: str | Path) -> str:
 
 
 def main(argv=None) -> int:
+    # طرفية Windows افتراضياً cp1252: أعد التهيئة قبل أي طباعة عربية.
+    reconfigure_std_streams_utf8()
     argument_parser = argparse.ArgumentParser(description="تفعيل الوضع الآلي الكامل في config.ini")
     argument_parser.add_argument("--config", default=str(CONFIG_PATH), help="مسار config.ini")
     argument_parser.add_argument("--basis", default="owned", choices=BASIS_VALUES, help="أساس الحقوق")

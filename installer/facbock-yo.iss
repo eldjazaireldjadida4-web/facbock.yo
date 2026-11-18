@@ -6,7 +6,7 @@
 ; in sync with version.py (tests/test_packaging.py enforces this).
 
 #ifndef AppVersion
-  #define AppVersion "4.49.27"
+  #define AppVersion "4.49.28"
 #endif
 #define AppName "facbock.yo — FB to YouTube Uploader Pro"
 #define AppPublisher "eldjazaireldjadida4-web"

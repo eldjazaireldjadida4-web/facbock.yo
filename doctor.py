@@ -19,6 +19,7 @@ import tempfile
 import configparser
 
 from dependency_check import missing_runtime_dependencies
+from console_encoding import reconfigure_std_streams_utf8
 from content_safety import (
     DEFAULT_OPERATOR_RIGHTS_STATEMENT,
     migrate_legacy_rights_gate_config,
@@ -357,6 +358,8 @@ def _collect_checks(add_check, config, config_error, app_directory):
 
 def main():
     """نقطة التشغيل: نفس سلوك السكربت السابق حرفياً مع رمز خروج صحيح."""
+    # طرفية Windows افتراضياً cp1252: أعد التهيئة قبل أي طباعة عربية.
+    reconfigure_std_streams_utf8()
     os.chdir(APP_DIRECTORY)
     config, config_error = _load_config(APP_DIRECTORY)
     results = []
