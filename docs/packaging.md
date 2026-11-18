@@ -70,10 +70,10 @@ build_windows.bat
 الناتج: `dist\facbock-yo\`. ثم يُترجم المثبّت (إن كان Inno Setup مثبتاً):
 
 ```bat
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=4.49.26 installer\facbock-yo.iss
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=4.49.27 installer\facbock-yo.iss
 ```
 
-الناتج: `installer-output\facbock-yo-4.49.26-windows-x86_64-setup.exe`.
+الناتج: `installer-output\facbock-yo-4.49.27-windows-x86_64-setup.exe`.
 
 ## البناء على Linux
 
@@ -81,14 +81,14 @@ build_windows.bat
 bash build_linux.sh
 ```
 
-الناتج: `dist/facbock-yo/` + `dist/facbock-yo-4.49.26-linux-x86_64.tar.gz`.
+الناتج: `dist/facbock-yo/` + `dist/facbock-yo-4.49.27-linux-x86_64.tar.gz`.
 ملف `facbock-yo.sh` داخل الحزمة ينسخ `config.ini.example` إلى
 `config.ini` عند أول تشغيل إن لم يوجد، ثم يشغّل التطبيق.
 
 ## سير عمل الإصدار على GitHub
 
 `.github/workflows/release.yml`: عند دفع وسم `v*` (مثلاً
-`git tag v4.49.26 && git push origin v4.49.26`) أو تشغيله يدوياً، يبني
+`git tag v4.49.27 && git push origin v4.49.27`) أو تشغيله يدوياً، يبني
 المثبّت على `windows-latest` (PyInstaller + Inno Setup عبر Chocolatey)،
 ويتحقق من المنفّذ المجمّد (`--version` و`--help` و`--preflight` الذي
 يجب أن يخرج برمز 2 في نسخة نظيفة — أي «بيانات اعتماد مفقودة» لا عطل)،
