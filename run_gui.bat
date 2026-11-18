@@ -5,7 +5,13 @@ set "PYTHONUTF8=1"
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
     echo شغّل setup.bat أولاً.
+    pause
     exit /b 2
 )
 .venv\Scripts\python.exe fb_youtube_uploader_v49_pro.py %*
+if errorlevel 1 (
+    echo.
+    echo انتهى التشغيل برمز خطأ %errorlevel%. راجع الرسالة أعلاه.
+    pause
+)
 exit /b %errorlevel%

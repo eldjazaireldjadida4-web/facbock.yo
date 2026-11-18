@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
 
-أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.16**.
+أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.17**.
 
 سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.12 عبر GitHub Actions (`.github/workflows/ci.yml`).
 

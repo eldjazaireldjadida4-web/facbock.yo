@@ -1,5 +1,21 @@
 # سجلّ التغييرات
 
+## 4.49.17 — 2026-11-18
+
+- سكربت `enable_automation.py`: يُعِدّ `config.ini` للوضع الآلي الكامل من
+  سطر الأوامر — يضبط `RIGHTS_GATE_MODE=operator_confirmed` مع إقرار صادق
+  يُدخله المشغل بنفسه (`--statement`، 25 حرفاً على الأقل، و`--evidence`
+  للأسس غير `owned`)، و`REVIEW_BEFORE_UPLOAD=false`،
+  `PRESERVE_FACEBOOK_TITLE=false`، `TITLE_OPTIMIZE=true`، `[AI]
+  ENABLED=true`، ويطبع الخطوات المتبقية (مفتاح Gemini، تسجيل دخول
+  YouTube). يكتب عبر `config_store.write_config_atomically` مع نسخ
+  احتياطي، ويدعم `--dry-run` و`--show`. `PRESERVE_FACEBOOK_TITLE=false`
+  يسمح باستخدام عناوين الذكاء الاصطناعي بدل العنوان النائب من فيسبوك.
+- `run_automation.bat` و`run_gui.bat`: يبقيان النافذة مفتوحة (`pause`)
+  عند انتهاء التشغيل برمز خطأ حتى تُقرأ الرسالة بدل اختفاء النافذة.
+- اختبارات `tests/test_enable_automation.py` (7 اختبارات): التطبيق،
+  رفض الأسس والإقرارات الناقصة، شرط الإثبات، العرض، idempotency.
+
 ## 4.49.16 — 2026-11-17
 
 - إصلاح إنهاء الاختبار للعملية: `test_close_has_a_deadline_instead_of_waiting_forever`
