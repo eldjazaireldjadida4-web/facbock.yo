@@ -41,6 +41,31 @@ def test_readiness_check_reports_timeout_without_raising(tmp_path, monkeypatch):
     assert "partial report" in output
 
 
+def test_readiness_check_survives_none_stdout_from_doctor(tmp_path, monkeypatch):
+    """انحدار 4.49.29: على Windows في CI أعاد تشغيل الطبيب stdout=None
+    رغم capture_output، فانهار الفحص بـ AttributeError على .strip()
+    بدل إرجاع رمز الطبيب. الغياب يُعامل كإخراج فارغ."""
+    (tmp_path / "doctor.py").write_text("pass", encoding="utf-8")
+
+    def none_stdout(command, **_kwargs):
+        return SimpleNamespace(returncode=1, stdout=None, stderr="doctor boom\n")
+
+    monkeypatch.setattr(control_plane.subprocess, "run", none_stdout)
+    code, output = control_plane.run_readiness_check(tmp_path)
+
+    assert code == 1
+    assert output == "doctor boom"
+
+    def none_both(command, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout=None, stderr=None)
+
+    monkeypatch.setattr(control_plane.subprocess, "run", none_both)
+    code, output = control_plane.run_readiness_check(tmp_path)
+
+    assert code == 0
+    assert output == ""
+
+
 def test_readiness_check_reports_missing_doctor(tmp_path):
     code, output = control_plane.run_readiness_check(tmp_path)
 

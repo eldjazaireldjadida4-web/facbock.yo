@@ -562,6 +562,11 @@ def run_readiness_check(project_directory: str | Path, timeout: int = 90) -> tup
             cwd=root,
             capture_output=True,
             text=True,
+            # الأنبوب بين الفاحص والطبيب UTF-8 صراحةً: الطبيب يعيد تهيئة
+            # إخراجه إلى UTF-8 (4.49.28)، وترميز الإعدادات المحلية على
+            # Windows هو cp1252 فيشوّه التقرير العربي عند فكّه به.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )
@@ -572,7 +577,10 @@ def run_readiness_check(project_directory: str | Path, timeout: int = 90) -> tup
         return 2, f"انتهت مهلة فحص الجاهزية.\n{output}".strip()
     except OSError as error:
         return 2, f"تعذر تشغيل فحص الجاهزية: {error}"
-    output = result.stdout.strip()
+    # قد يكون stdout‏/stderr‏ None رغم capture_output (لوحظ على Windows
+    # في CI 4.49.28: انهار الفحص بـ AttributeError على .strip())؛
+    # عامل الغياب كإخراج فارغ بدل الانهيار.
+    output = (result.stdout or "").strip()
     if result.stderr:
-        output = f"{output}\n\n{result.stderr.strip()}".strip()
+        output = f"{output}\n\n{(result.stderr or '').strip()}".strip()
     return result.returncode, output

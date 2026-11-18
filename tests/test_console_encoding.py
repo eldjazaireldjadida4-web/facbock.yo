@@ -127,7 +127,7 @@ def test_version_exits_0_under_strict_cp1252() -> None:
     assert result.returncode == 0
     _assert_no_encoding_crash(result)
     assert "FB → YouTube Uploader" in result.stdout
-    assert "4.49.28" in result.stdout
+    assert "4.49.29" in result.stdout
 
 
 def test_help_exits_0_under_strict_cp1252() -> None:
@@ -197,7 +197,10 @@ def test_preflight_exits_2_in_clean_copy_under_strict_cp1252(tmp_path: Path) -> 
         "fb_youtube_uploader_v49_pro.py", "--preflight", cwd=clean, timeout=300
     )
 
-    assert result.returncode == 2
+    assert result.returncode == 2, (
+        f"preflight exit was {result.returncode}\n"
+        f"--- child stdout ---\n{result.stdout}\n--- child stderr ---\n{result.stderr}"
+    )
     _assert_no_encoding_crash(result)
     assert "ModuleNotFoundError" not in result.stderr
     assert "VIDEO_DIRECTORY" in result.stdout

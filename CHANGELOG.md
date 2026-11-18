@@ -1,3 +1,27 @@
+## 4.49.29 — 2026-11-18
+
+### إصلاح فشل CI على Windows: انهيار `--preflight` عند `stdout=None`
+
+- بعد رفع 4.49.28 فشل CI على Windows فقط (الوظائف الثلاث) باختبار
+  واحد: `test_preflight_exits_2_in_clean_copy_under_strict_cp1252`
+  (`assert 1 == 2`) — عملية `--preflight` الفرعية في نسخة نظيفة
+  انهارت بـ `AttributeError: 'NoneType' object has no attribute 'strip'`
+  في `control_plane.py: run_readiness_check`، عند `result.stdout.strip()`
+  رغم `capture_output=True`. لا خطأ إنتاجي في فحص الجاهزية نفسه؛
+  الطبيب يعمل، والانهيار في جمع مخرجاته.
+- `run_readiness_check` الآن يعامل `stdout`/`stderr` الغائبين كإخراج
+  فارغ (`(result.stdout or "").strip()`)، ويفكّ أنبوب الطبيب
+  بترميز UTF-8 صراحةً مع `errors="replace"` بدل ترميز الإعدادات
+  المحلية (cp1252 على Windows كان يشوّه التقرير العربي القادم من
+  طبيب UTF-8).
+- اختبار انحدار جديد في `tests/test_control_plane.py` يثبّت أن
+  `run_readiness_check` ينجو من `stdout=None` و`stderr=None` دون
+  رفع، ورسالة تأكيد الاختبار الفاشل سابقاً في
+  `tests/test_console_encoding.py` صارت تطبع مخرجات العملية الفرعية
+  كاملةً عند الفشل حتى لا يُخفى التتبع الحقيقي في السجل مرة أخرى.
+- المجموعة الكاملة 800 ناجحاً واختباران متخطيان تحت 3.12.3 (يُتحقق
+  3.11 عبر CI بعد الرفع كالمعتاد).
+
 ## 4.49.28 — 2026-11-18
 
 ### إصلاح عطل إنتاجي على Windows: انهيار UnicodeEncodeError على طرفية cp1252
