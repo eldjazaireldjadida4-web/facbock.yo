@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.17 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.18 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -7887,10 +7887,12 @@ class _CLIEventSink:
 
 
 def _run_cli_preflight(settings):
-    token_path = os.path.join(
-        APP_DIRECTORY,
-        f"{sanitize_account_name(settings['account'])}_token.json",
-    )
+    token_candidates = _youtube_token_paths(settings["account"])
+    token_path = token_candidates[0]
+    for candidate in token_candidates[:2]:
+        if os.path.exists(candidate):
+            token_path = candidate
+            break
     code, report = run_automation_preflight(APP_DIRECTORY, token_path, SCOPES)
     errors = []
     if settings.get("min_disk_config_error"):

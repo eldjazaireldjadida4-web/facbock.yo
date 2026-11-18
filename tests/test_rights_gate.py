@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -276,6 +277,48 @@ def test_cli_preflight_reports_incomplete_operator_rights_before_worker(monkeypa
 
     assert app._run_cli_preflight(settings) == 2
     assert "RIGHTS_OPERATOR_EVIDENCE" in capsys.readouterr().out
+
+
+def test_cli_preflight_uses_fingerprinted_oauth_token(monkeypatch, tmp_path):
+    class Logger:
+        def info(self, *_args):
+            pass
+
+    monkeypatch.setattr(app, "APP_DIRECTORY", str(tmp_path))
+    seen = {}
+
+    def fake_preflight(_app_dir, token_path, _scopes):
+        seen["token_path"] = token_path
+        return 0, "جاهز"
+
+    monkeypatch.setattr(app, "run_automation_preflight", fake_preflight)
+    monkeypatch.setattr(app, "load_pages", lambda: [{"enabled": True}])
+    monkeypatch.setattr(app, "validate_content_review_settings", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(app, "validate_publication_controls", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(app, "_configure_cli_logger", lambda: Logger())
+    settings = {
+        "account": "account1",
+        "min_disk_config_error": False,
+        "content_review_config_error": False,
+        "dry_run": False,
+        "content_review_enabled": False,
+        "cutter_root": "",
+        "cutter_python": "",
+        "privacy": "private",
+        "schedule_enabled": False,
+        "allow_public_automation": False,
+        "rights_gate_mode": "operator_confirmed",
+        "rights_operator_basis": "owned",
+        "rights_operator_statement": STATEMENT,
+        "rights_operator_evidence": "",
+    }
+
+    digest = hashlib.sha256(b"account1").hexdigest()
+    fingerprinted = tmp_path / f"account1_{digest}_token.json"
+    fingerprinted.write_text("{}", encoding="utf-8")
+
+    assert app._run_cli_preflight(settings) == 0
+    assert seen["token_path"] == str(fingerprinted)
 
 
 def test_release_rights_hold_requires_a_valid_automatic_gate(monkeypatch):

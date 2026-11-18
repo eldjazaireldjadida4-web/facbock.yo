@@ -1,5 +1,15 @@
 # سجلّ التغييرات
 
+## 4.49.18 — 2026-11-18
+
+- إصلاح `--preflight` في وضع CLI: كان يفحص اسم الرمز القديم
+  `account1_token.json` فقط ويبلّغ عنه "مفقود" رغم وجود الرمز الفعلي
+  المبني بالبصمة (`account1_<sha256>_token.json`). الآن يستخدم
+  `_youtube_token_paths` ويختار الملف الموجود فعلاً (المُ fingerprinted أولًا
+  ثم القديم للتوافق).
+  - اختبار جديد: `test_cli_preflight_uses_fingerprinted_oauth_token` في
+    `tests/test_rights_gate.py`.
+
 ## 4.49.17 — 2026-11-18
 
 - سكربت `enable_automation.py`: يُعِدّ `config.ini` للوضع الآلي الكامل من
