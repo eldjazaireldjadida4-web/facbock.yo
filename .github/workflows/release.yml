@@ -64,6 +64,12 @@ jobs:
           if ($LASTEXITCODE -ne 2) { throw "preflight exit was $LASTEXITCODE, expected 2 (missing credentials)" }
           .\dist\facbock-yo\facbock-yo-doctor.exe
           if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) { throw "doctor exit was $LASTEXITCODE" }
+          # The doctor is the last native command and exits 1 when the
+          # report has blockers (expected in a clean checkout: no config,
+          # no credentials). GitHub Actions fails a pwsh step when the
+          # LAST native command exits non-zero, even if the checks above
+          # passed, so end with an explicit success exit code.
+          exit 0
 
       - name: Install Inno Setup
         run: choco install innosetup --yes --no-progress
