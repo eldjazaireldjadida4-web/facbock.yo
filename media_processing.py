@@ -96,16 +96,18 @@ def build_overlay_filter(position_name, margin, secondary_enabled=False,
     x = x_template.format(m=int(margin))
     y = y_template.format(m=int(margin))
     if not secondary_enabled:
-        return ("[1:v]format=rgba[badge];"
-                f"[0:v][badge]overlay=x='{x}':y='{y}':format=auto[vout]")
+        return ("[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[base];"
+                "[1:v]format=rgba[badge];"
+                f"[base][badge]overlay=x='{x}':y='{y}':format=auto,format=yuv420p[vout]")
     sx_template, sy_template = LOGO_POSITIONS.get(
         secondary_position, LOGO_POSITIONS["أسفل اليسار"])
     sx = sx_template.format(m=int(margin))
     sy = sy_template.format(m=int(margin))
-    return ("[1:v]format=rgba[primary_badge];"
-            f"[0:v][primary_badge]overlay=x='{x}':y='{y}':format=auto[primary];"
+    return ("[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[base0];"
+            "[1:v]format=rgba[primary_badge];"
+            f"[base0][primary_badge]overlay=x='{x}':y='{y}':format=auto[primary];"
             "[2:v]format=rgba[secondary_badge];"
-            f"[primary][secondary_badge]overlay=x='{sx}':y='{sy}':format=auto[vout]")
+            f"[primary][secondary_badge]overlay=x='{sx}':y='{sy}':format=auto,format=yuv420p[vout]")
 
 
 def create_logo_badge(logo_path, video_width, video_height, scale_pct=8,

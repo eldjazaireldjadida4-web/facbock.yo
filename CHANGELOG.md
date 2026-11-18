@@ -1,4 +1,18 @@
-# سجلّ التغييرات
+## 4.49.19 — 2026-11-18
+
+- إصلاح فشل تركيب الشعار على فيديوهات بأبعاد فردية (مثل 851×1277):
+  `build_overlay_filter` يضيف الآن `scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`
+  قبل التراكب ويخرج `yuv420p`، فلا يعود ffmpeg يفشل بـ
+  `Terminating thread with return code -22 (Invalid argument)`.
+  - اختبار جديد: `test_overlay_filter_enforces_even_dimensions_yuv420p` في
+    `tests/test_media_processing_module.py`، واختبار انحدار حقيقي عبر ffmpeg
+    داخل `tests/test_logo_overlay_ffmpeg.py`.
+- رفض عناوين واجهة فيسبوك المتسربة `Reel tile preview` و`Tile Preview` و
+  `video tile preview` كعناوين عامة (`GENERIC_TITLE_VALUES`) — كانت تُعتمد
+  عنواناً حقيقياً فتُرفع حرفياً إلى يوتيوب.
+  - اختبار: `test_gateway_og_titles_are_rejected_as_generic` موسّع في
+    `tests/test_generic_titles.py`.
+
 
 ## 4.49.18 — 2026-11-18
 

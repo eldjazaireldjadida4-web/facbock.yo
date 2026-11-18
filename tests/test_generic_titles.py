@@ -147,5 +147,6 @@ def test_download_video_prefers_og_title_over_all_sources(tmp_path, monkeypatch)
 
 def test_gateway_og_titles_are_rejected_as_generic():
     for junk in ("Discover Popular Videos Facebook", "Log into Facebook",
-                 "Content not found", "title preview"):
+                 "Content not found", "title preview", "Reel tile preview",
+                 "Tile Preview", "video tile preview"):
         assert texttools.is_generic_title(junk), junk

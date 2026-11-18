@@ -360,7 +360,7 @@ GENERIC_TITLE_VALUES = frozenset({
     # وليست عناوين حقيقية؛ كانت تمر كعنوان صالح وتُرفع إلى يوتيوب حرفياً.
     "title", "titles", "title preview", "preview", "previews",
     "video preview", "preview video", "play video", "playing video",
-    "watch video", "watch reel", "watch live", "live", "fb video",
+    "watch video", "watch reel", "watch live", "live", "fb video",    "reel tile preview", "tile preview", "video tile preview",
     "facebook watch", "shared video", "video post", "fullscreen",
     "see more", "reel video", "live video replay", "video replay",
     # صفحات Facebook العامة قد تعيد عناوين بوابة بدل عنوان المقطع

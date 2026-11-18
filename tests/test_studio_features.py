@@ -154,7 +154,7 @@ def test_duration_filter():
 def test_overlay_filter_structure():
     fc = pro49.build_overlay_filter("أعلى اليمين", 20)
     assert "[1:v]format=rgba[badge]" in fc
-    assert "overlay=x='main_w-overlay_w-20':y='20':format=auto[vout]" in fc
+    assert "overlay=x='main_w-overlay_w-20':y='20':format=auto,format=yuv420p[vout]" in fc
     fc2 = pro49.build_overlay_filter("أسفل اليسار", 10)
     assert "overlay=x='10':y='main_h-overlay_h-10'" in fc2
 
