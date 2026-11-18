@@ -1,3 +1,38 @@
+## 4.49.21 — 2026-11-18
+
+### إصلاح فشل CI على Windows
+
+- بعد دفع 4.49.20 فشل GitHub Actions على `windows-latest` فقط (Python
+  3.12 و3.14) بينما نجح `ubuntu-latest`؛ الخطوة الفاشلة كانت الاختبارات
+  (`python -m pytest -q --tb=short`). السبب اختبار واحد جديد:
+  `test_doctor_permission_check_uses_app_directory` في
+  `tests/test_hardening_44920.py` كان يتوقع تحذير WARN لملف
+  `account_token.json` بأذونات واسعة، لكن قسم فحص الأذونات 7.5 في
+  `doctor.py` محروس قصداً بـ `if os.name == "posix"` — Windows بلا أوضاع
+  chmod فالقسم لا يعمل هناك أصلاً ولا يظهر أي WARN.
+- الإصلاح: الاختبار صار يُتخطَّى على غير POSIX
+  (`@pytest.mark.skipif(os.name != "posix")`) كما في اختبارات الأذونات
+  الأخرى (`test_hardening_449.py`، `test_v413_features.py`،
+  `test_v413_hardening.py`)، دون أي تغيير في كود الإنتاج أو إضعاف
+  الفحص. وأُضيف اختبار `test_doctor_permission_check_is_posix_only`
+  يحاكي Windows (`os.name = "nt"`) ويثبت أن `_collect_checks` لا يُنتج
+  تحذير أذونات هناك.
+- التحقق من بقية اختبارات 4.49.20 الـ12 وكامل المجموعة تحت محاكاة Windows
+  (`os.name = "nt"` لكل اختبار): الاختبار الوحيد الفاشل فعلاً كان اختبار
+  doctor هذا؛ الثلاثة الأخرى الفاشلة في المحاكاة اختبارات أذونات قديمة
+  محروسة بـ skipif أصلاً فتُتخطَّى على Windows الحقيقي، لا انحدارات.
+  لم يُعثر على عطل إنتاج آخر خاص بـ Windows في كود 4.49.20.
+
+### التحقق
+
+- **716 اختباراً ناجحاً** (13 في `tests/test_hardening_44920.py`: 12 من
+  4.49.20 + اختبار محاكاة Windows الجديد)، واختباران متخطيان يتطلبان
+  دلالات أذونات POSIX (يعمل التشغيل كـ root)، واختبار doctor للأذونات
+  يُتخطَّى الآن على Windows قصداً. نجح `ruff check` و`compileall`،
+  ويعرض `--version` الإصدار `4.49.21`. لا رفع حي ولا تسجيل دخول إلى
+  Facebook أو YouTube في هذا الإصدار.
+
+
 ## 4.49.20 — 2026-11-18
 
 ### فحوص لا تعلّق وجدولة لا تُسقط الدورة

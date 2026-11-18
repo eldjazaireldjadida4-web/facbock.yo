@@ -3,6 +3,10 @@
 
 كل اختبار هنا يثبت عطلاً حقيقياً وُجد في المراجعة: إما أنه كان يعلّق أو
 يُسقط التشغيل، أو كان يقرأ/يجلب من المكان الخطأ.
+
+4.49.21: اختبار أذونات doctor صار POSIX فقط (يُتخطَّى على Windows حيث
+القسم 7.5 محروس بـ `os.name == "posix"` قصداً)، مع اختبار محاكاة يثبت
+أن Windows لا يُنتج WARN أذونات.
 """
 from __future__ import annotations
 
@@ -156,6 +160,11 @@ def test_doh_resolve_parses_valid_answer(monkeypatch):
 
 # ── doctor: فحص الأذونات في مجلد التطبيق لا مجلد العمل ───────────────────
 
+# فحص الأذونات قسم 7.5 في doctor.py محروس بـ `if os.name == "posix"` قصداً:
+# Windows بلا أوضاع chmod، فالفحص لا يعمل هناك أصلاً. هذا الاختبار كان
+# يفشل في CI على windows-latest وحدها (4.49.20) لأن القسم لا يُنفَّذ هناك
+# فلا يظهر أي WARN؛ يُتخطَّى على غير POSIX كما في اختبارات الأذونات الأخرى.
+@pytest.mark.skipif(os.name != "posix", reason="فحص أذونات الملفات POSIX فقط")
 def test_doctor_permission_check_uses_app_directory(monkeypatch, tmp_path):
     """ملف رمز بأذونات واسعة في مجلد التطبيق كان يُفوَّت عندما يكون مجلد
     العمل الحالي مختلفاً، لأن الفحص استخدم مسارات نسبية."""
@@ -173,6 +182,34 @@ def test_doctor_permission_check_uses_app_directory(monkeypatch, tmp_path):
         str(tmp_path),
     )
     assert any(
+        status == doctor.WARN and "account_token.json" in name
+        for status, name, _detail, _fix in results
+    )
+
+
+def test_doctor_permission_check_is_posix_only(monkeypatch, tmp_path):
+    """محاكاة Windows: قسم الأذونات 7.5 لا يعمل على `nt` قصداً، فلا يظهر
+    أي WARN لملف رمز بأذونات واسعة. هذا هو سلوك الإنتاج على Windows، لا
+    عطلاً — ويُثبَّت هنا حتى لا يُعاد إدخال اختبار يفترض WARN على Windows.
+    (`tempfile` يقرأ `os.O_TEMPORARY` عند `os.name == "nt"`؛ موجود أصلاً
+    على مفسر Windows الحقيقي، ويُحاكى هنا على POSIX فقط.)"""
+    monkeypatch.setattr(doctor, "APP_DIRECTORY", str(tmp_path))
+    monkeypatch.setattr(doctor, "facebook_network_route", lambda *a, **k: "ipv4")
+    monkeypatch.setattr(os, "name", "nt")
+    if not hasattr(os, "O_TEMPORARY"):
+        monkeypatch.setattr(os, "O_TEMPORARY", 0, raising=False)
+    token = tmp_path / "account_token.json"
+    token.write_text('{"token": "x"}', encoding="utf-8")
+    os.chmod(token, 0o644)
+    config, config_error = doctor._load_config(str(tmp_path))
+    results = []
+    doctor._collect_checks(
+        lambda name, status, detail="", fix="": results.append((status, name, detail, fix)),
+        config,
+        config_error,
+        str(tmp_path),
+    )
+    assert not any(
         status == doctor.WARN and "account_token.json" in name
         for status, name, _detail, _fix in results
     )
@@ -201,10 +238,10 @@ def test_dead_config_store_helper_removed():
 
 # ── اتساق الإصدار 4.49.20 ────────────────────────────────────────────────
 
-def test_version_44920_consistent_everywhere():
-    assert version.APP_VERSION == "4.49.20"
-    assert app.__version__ == "4.49.20"
+def test_version_44921_consistent_everywhere():
+    assert version.APP_VERSION == "4.49.21"
+    assert app.__version__ == "4.49.21"
     header = (ROOT / "fb_youtube_uploader_v49_pro.py").read_text(encoding="utf-8")
-    assert "v4.49.20" in header.splitlines()[2]
-    assert "**4.49.20**" in (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "**4.49.20**" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "v4.49.21" in header.splitlines()[2]
+    assert "**4.49.21**" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "**4.49.21**" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")

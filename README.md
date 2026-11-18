@@ -2,9 +2,13 @@
 
 [![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
 
-أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.20**.
+أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.21**.
 
 سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.12 عبر GitHub Actions (`.github/workflows/ci.yml`).
+
+### إصلاح فشل CI على Windows — 4.49.21
+
+- اختبار أذونات `doctor` من 4.49.20 كان يفترض ظهور تحذير WARN لملف رمز بأذونات واسعة، لكن قسم الفحص 7.5 محروس قصداً بـ `os.name == "posix"` (Windows بلا أوضاع chmod)، فكان يفشل على windows-latest وحدها. الاختبار صار يُتخطَّى على غير POSIX، وأُضيف اختبار محاكاة يثبت أن Windows لا يُنتج تحذير أذونات.
 
 ### تقوية الفحوص والجدولة والجلب — 4.49.20
 
@@ -209,7 +213,8 @@ python -m pytest -q
 - `tests/`: الاختبارات الحالية؛ `tests/fixtures/versions/` لقطات تاريخية تستخدمها اختبارات التوافق فقط.
 - `docs/UPGRADE.md`: نقل الإعدادات والبيانات من تثبيت أقدم.
 - `docs/FIRST_RUN.md`: دليل أول دورة رفع حية، خطوة بخطوة، مبنياً على نتائج فحص مُتحقَّق منها.
-- `docs/validation/FINAL_VALIDATION_4.49.20.md`: نتائج الإصدار الحالي (مهلة DNS، جدولة النشر، حارس og:title، ومسارات doctor).
+- `docs/validation/FINAL_VALIDATION_4.49.21.md`: نتائج الإصدار الحالي (إصلاح فشل CI على Windows).
+- `docs/validation/FINAL_VALIDATION_4.49.20.md`: تقرير الإصدار السابق (مهلة DNS، جدولة النشر، حارس og:title، ومسارات doctor).
 - `docs/validation/FINAL_VALIDATION_4.49.11.md`: تقرير الإصدار السابق (عنوان المراجعة النهائي).
 - `docs/validation/FINAL_VALIDATION_4.49.12.md`: تقرير الإصدار السابق (الموافقة والوسوم وإسناد المصدر وفصل OAuth).
 - `docs/validation/FINAL_VALIDATION_4.49.13.md`: تقرير الإصدار السابق (إعادة التفويض الآمنة عند تصادم ملفات OAuth القديمة).
