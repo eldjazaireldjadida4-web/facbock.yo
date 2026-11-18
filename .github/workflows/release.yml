@@ -47,8 +47,15 @@ jobs:
       - name: Smoke-test the frozen app
         shell: pwsh
         run: |
+          # PowerShell does NOT stop on a native command's non-zero exit
+          # code, so every smoke-test command needs an explicit check:
+          # in 4.49.27 --version/--help crashed (UnicodeEncodeError on the
+          # cp1252 Windows console) and the job still went on to fail only
+          # at --preflight, hiding which step broke.
           .\dist\facbock-yo\facbock-yo.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "facbock-yo --version exit was $LASTEXITCODE, expected 0" }
           .\dist\facbock-yo\facbock-yo.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "facbock-yo --help exit was $LASTEXITCODE, expected 0" }
           # --preflight is EXPECTED to exit 2 in a clean checkout: there
           # is no config.ini, no client_secrets.json and no YouTube token
           # here. Exit 2 with a clean report means "missing credentials",
