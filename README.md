@@ -2,9 +2,17 @@
 
 [![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
 
-أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.22**.
+أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.23**.
 
 سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.11 و3.12 و3.14 عبر GitHub Actions (`.github/workflows/ci.yml`).
+
+### تسريب رمز الجلسة وإصلاحات CLI والأرشيف — 4.49.23
+
+- أُغلق تسريب أمني: قيمة كوكيز `xs` لجلسة Facebook كانت تصل صريحة إلى السجلات والتقرير التشخيصي عبر رسالة `LoadError` عند تلف سطر في `cookies.txt`؛ المنقّح الآن يخفي قيمة أي سطر كوكيز Netscape (تابات حقيقية أو مهرّبة).
+- `compact_upload_receipts` صار يكتب الأرشيف قبل تقليم الملف النشط، فلا تُفقد إيصالات إن فشلت كتابة الأرشيف.
+- وضع `--cli` صار يتحقق من الإعدادات (`validate_configuration`) قبل السحب: مدد معكوسة أو تصنيف غير صالح تُرفض برمز 2 بدل إهدار دورة كاملة ووسم الفيديوهات كمقروءة.
+- `HTTP 400` بجسم فارغ من Gemini لم يعد يعطّل المفتاح حتى منتصف الليل؛ يأخذ تبريد 10 دقائق، وفقط الجسم الذي يثبت تلف المفتاح يعلّمه تالفاً.
+- `--preflight` و`run_cli` و`enable_automation.py` تعرض خطأ نظيفاً يشير إلى `--repair-state` (أو استعادة نسخة احتياطية) عند تلف ملفات الحالة أو الإعدادات، بدل تتبّع استثناء.
 
 ### دعم Python 3.11 وترقية الاعتماديات — 4.49.22
 
@@ -219,7 +227,8 @@ python -m pytest -q
 - `tests/`: الاختبارات الحالية؛ `tests/fixtures/versions/` لقطات تاريخية تستخدمها اختبارات التوافق فقط.
 - `docs/UPGRADE.md`: نقل الإعدادات والبيانات من تثبيت أقدم.
 - `docs/FIRST_RUN.md`: دليل أول دورة رفع حية، خطوة بخطوة، مبنياً على نتائج فحص مُتحقَّق منها.
-- `docs/validation/FINAL_VALIDATION_4.49.22.md`: نتائج الإصدار الحالي (دعم Python 3.11، ترقية الاعتماديات، ونجاح اختبار إقلاع الواجهة).
+- `docs/validation/FINAL_VALIDATION_4.49.23.md`: نتائج الإصدار الحالي (تنقيح كوكيز Netscape، ترتيب أرشفة الإيصالات، التحقق من الإعدادات في CLI، تبريد 400 الفارغ، وأخطاء نظيفة لملفات تالفة).
+- `docs/validation/FINAL_VALIDATION_4.49.22.md`: تقرير الإصدار السابق (دعم Python 3.11، ترقية الاعتماديات، ونجاح اختبار إقلاع الواجهة).
 - `docs/validation/FINAL_VALIDATION_4.49.21.md`: تقرير الإصدار السابق (إصلاح فشل CI على Windows).
 - `docs/validation/FINAL_VALIDATION_4.49.20.md`: تقرير الإصدار السابق (مهلة DNS، جدولة النشر، حارس og:title، ومسارات doctor).
 - `docs/validation/FINAL_VALIDATION_4.49.11.md`: تقرير الإصدار السابق (عنوان المراجعة النهائي).

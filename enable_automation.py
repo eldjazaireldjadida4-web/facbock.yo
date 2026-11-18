@@ -25,7 +25,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from config_store import read_config, write_config_atomically
+from config_store import ConfigRecoveryError, read_config, write_config_atomically
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.ini"
@@ -140,6 +140,17 @@ def main(argv=None) -> int:
     argument_parser.add_argument("--show", action="store_true", help="عرض الإعدادات الحالية فقط")
     args = argument_parser.parse_args(argv)
 
+    try:
+        return _main_inner(args)
+    except ConfigRecoveryError as error:
+        # config.ini تالف بلا نسخة احتياطية صالحة: خطأ نظيف بدل تتبّع
+        # استثناء؛ الملف نفسه لم يُمسّ.
+        print(f"تعذرت قراءة {args.config}: {error}", file=sys.stderr)
+        print("أصلح config.ini يدوياً أو استعد نسخة احتياطية (.bak) ثم أعد المحاولة.", file=sys.stderr)
+        return 2
+
+
+def _main_inner(args) -> int:
     if args.show:
         print(show_status(args.config))
         return 0

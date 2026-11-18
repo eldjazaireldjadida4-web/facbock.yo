@@ -29,6 +29,25 @@ _KEY_TOKEN_RE = re.compile(
 )
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 _URL_USERINFO_RE = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/@\s]+@")
+# سطر كوكيز بصيغة Netscape (ملف cookies.txt): نطاق، علامة، مسار، علامة،
+# تاريخ انتهاء، اسم الكوكي، قيمة الكوكي. قيمة الكوكي (مثل xs لجلسة
+# فيسبوك) رمز جلسة حيّ؛ رسائل خطأ مثل LoadError من http.cookiejar
+# تضمّن السطر كاملاً، ولا نمط آخر هنا يطابقها لأن الاسم والقيمة مفصولان
+# بتاب لا بـ«=» أو «:». يظهر السطر بشكلين: تابات حقيقية عند تسجيل محتوى
+# الملف مباشرة، و«\t» مهرّبة داخل نص الاستثناء (repr). والحقول متساهلة
+# عمداً لأن السطور المشوَّهة (تاريخ انتهاء غير رقمي، علامة غير TRUE/FALSE)
+# هي بالذات التي تُطلق LoadError وتسرّب القيمة.
+_NETSCAPE_COOKIE_RE = re.compile(
+    r"(^|[\s'\"])"
+    r"([^\t\r\n\\ ]+\.[^\t\r\n\\ \t]+"
+    r"(?:\t|\\t)[^\t\r\n\\]+"
+    r"(?:\t|\\t)/[^\t\r\n\\]*"
+    r"(?:\t|\\t)[^\t\r\n\\]+"
+    r"(?:\t|\\t)[^\t\r\n\\]+"
+    r"(?:\t|\\t)[^\t\r\n\\]+"
+    r"(?:\t|\\t))"
+    r"[^\t\r\n'\" ]+"
+)
 
 
 def _redact_url(match: re.Match[str]) -> str:
@@ -69,6 +88,7 @@ def redact_sensitive_text(value: object) -> str:
     text = _BASIC_RE.sub(r"\1[REDACTED]", text)
     text = _ASSIGNMENT_RE.sub(r"\1\2[REDACTED]\4", text)
     text = _TELEGRAM_BOT_RE.sub(r"\1[REDACTED]", text)
+    text = _NETSCAPE_COOKIE_RE.sub(r"\1\2[REDACTED]", text)
     text = _KEY_TOKEN_RE.sub("[REDACTED]", text)
     text = _JWT_RE.sub("[REDACTED]", text)
     return text

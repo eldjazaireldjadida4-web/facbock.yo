@@ -110,6 +110,8 @@ def gemini_generate(prompt, model, keys_path, read_json, write_json,
                 pass
             # 400 قد يعني طلباً غير صالح (نموذج متقاعد، حدّ رموز) لا مفتاحاً
             # خاطئاً؛ اعتباره مفتاحاً تالفاً يعطّل مفتاحاً سليماً 24 ساعة.
+            # جسم فارغ بلا أي دليل على المفتاح يأخذ التبريد القصير أدناه
+            # مثل غيره من أخطاء الطلب/الخادم غير المرتبطة بالمفتاح.
             lowered = body.lower()
             key_problem = "api_key_invalid" in lowered or "api key not valid" in lowered
             # 403 مع PERMISSION_DENIED أو SERVICE_DISABLED تعني منعاً على
@@ -121,7 +123,7 @@ def gemini_generate(prompt, model, keys_path, read_json, write_json,
                                "service_not_enabled", "billing")
             )
             invalid = e.code == 401 or (e.code == 403 and "API_KEY_INVALID" in body) \
-                or (e.code == 400 and (not body.strip() or key_problem)) \
+                or (e.code == 400 and key_problem) \
                 or permission_problem
             if invalid:
                 reason = "منع مشروع: فعّل Generative Language API أو راجع الفوترة" \

@@ -113,7 +113,7 @@ def test_invalid_key_marked_and_rotates(monkeypatch, tmp_path):
     ]
     _write_json(keys_file, keys)
     _fake_urlopen(monkeypatch, [
-        _http_error(400),
+        _http_error(400, b'{"error": {"message": "API key not valid. Pass a valid key."}}'),
         "تمام",
     ])
     logs = []

@@ -238,10 +238,10 @@ def test_dead_config_store_helper_removed():
 
 # ── اتساق الإصدار 4.49.20 ────────────────────────────────────────────────
 
-def test_version_44922_consistent_everywhere():
-    assert version.APP_VERSION == "4.49.22"
-    assert app.__version__ == "4.49.22"
+def test_version_44923_consistent_everywhere():
+    assert version.APP_VERSION == "4.49.23"
+    assert app.__version__ == "4.49.23"
     header = (ROOT / "fb_youtube_uploader_v49_pro.py").read_text(encoding="utf-8")
-    assert "v4.49.22" in header.splitlines()[2]
-    assert "**4.49.22**" in (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "**4.49.22**" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "v4.49.23" in header.splitlines()[2]
+    assert "**4.49.23**" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "**4.49.23**" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.22 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.23 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -680,8 +680,10 @@ def compact_upload_receipts(
     archive = load_archived_receipts(archive_path)
     for source_id, record in moved.items():
         archive.setdefault(source_id, record)
-    save_upload_receipts(kept, path)
+    # الأرشيف أولاً ثم تقليم النشط: إن فشلت كتابة الأرشيف (قرص ممتلئ،
+    # صلاحيات) تبقى الإيصالات في الملف النشط ولا تُفقد من الملفين معاً.
     _write_json(archive_path, {"schema_version": 1, "receipts": archive})
+    save_upload_receipts(kept, path)
     logging.info("أُرشف %d إيصال رفع أقدم من %d يوماً", len(moved), max_age_days)
     return len(moved)
 
@@ -7912,7 +7914,19 @@ def _run_cli_preflight(settings):
     errors = []
     if settings.get("min_disk_config_error"):
         errors.append("قيمة SETTINGS.MIN_DISK_GB غير صالحة؛ أدخل رقماً محدوداً يساوي صفرًا أو أكبر.")
-    if not any(page.get("enabled", True) for page in load_pages()):
+    # إعدادات config.ini كاملة (مدد، تصنيف، جدولة): وضع CLI كان يتجاوز
+    # validate_configuration فيمرّر إعدادات مستحيلة — فيُسحب كل فيديو ثم
+    # يُرفض بالفلتر وتُوسم معرفاته كمقروءة إلى الأبد. الفحص هنا يغطي
+    # --preflight والتشغيل الكامل معاً لأن run_cli يمرّ من هنا.
+    for error in validate_configuration(config):
+        if error not in errors:
+            errors.append(error)
+    try:
+        pages = load_pages()
+    except RuntimeError as error:
+        errors.append(f"{error} شغّل --repair-state لعزل ملفات الحالة التالفة.")
+        pages = []
+    if not any(page.get("enabled", True) for page in pages):
         errors.append("لا توجد صفحات Facebook مفعّلة في pages.json.")
     if settings.get("content_review_config_error") and not settings.get("dry_run"):
         errors.append("قيمة SAFETY.ENABLED غير صالحة؛ استخدم true أو false.")
@@ -7956,7 +7970,13 @@ def _configure_cli_logger():
 
 def run_cli(dry_run=False, once=False, preflight_only=False):
     """تشغيل فحص الجاهزية أو المراقبة المستمرة أو دورة واحدة دون واجهة."""
-    settings = build_cli_settings()
+    try:
+        settings = build_cli_settings()
+    except RuntimeError as error:
+        # accounts.json تالف (أو غيره من ملفات الحالة): خطأ نظيف يشير إلى
+        # --repair-state بدل تتبّع استثناء غير معالَج.
+        print(f"{error} شغّل --repair-state لعزل ملفات الحالة التالفة.")
+        return 2
     if dry_run:
         settings["dry_run"] = True
     if preflight_only:
@@ -8000,7 +8020,11 @@ def run_cli(dry_run=False, once=False, preflight_only=False):
         for error in publication_errors:
             print(f"• {error}")
         return 2
-    pages = [p for p in load_pages() if p.get("enabled", True)]
+    try:
+        pages = [p for p in load_pages() if p.get("enabled", True)]
+    except RuntimeError as error:
+        print(f"{error} شغّل --repair-state لعزل ملفات الحالة التالفة.")
+        return 2
     if not pages:
         print("لا توجد صفحات مفعّلة في pages.json")
         return 1
