@@ -44,6 +44,18 @@ jobs:
       - name: Build one-dir bundle
         run: python -m PyInstaller --clean --noconfirm facbock-yo.spec
 
+      - name: Copy example configs to the bundle root
+        shell: pwsh
+        run: |
+          # PyInstaller 6 hides data files under _internal, so the examples
+          # only exist at dist\facbock-yo\_internal\ after the build — but
+          # the installer sources them from the bundle root (like
+          # build_windows.bat does). Without this copy ISCC 6.7.1 aborts
+          # the v4.49.29 build: 'Source file ...\config.ini.example does
+          # not exist'.
+          Copy-Item config.ini.example dist\facbock-yo\config.ini.example
+          Copy-Item rights_manifest.example.json dist\facbock-yo\rights_manifest.example.json
+
       - name: Smoke-test the frozen app
         shell: pwsh
         run: |
