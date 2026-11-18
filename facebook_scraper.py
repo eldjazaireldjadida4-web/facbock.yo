@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
+import json
 import re
 import socket
 import threading
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
@@ -77,13 +81,61 @@ def _resolve_bounded(host: str, port: int, family: int, timeout: float):
     return outcome.get("value") or []
 
 
+DOH_FALLBACK_ENABLED = True
+
+
+def _doh_resolve(host: str, port: int, family: int, timeout: float):
+    """حلّ بديل عبر DNS-over-HTTPS عندما يحجب مزوّد الخدمة الاسم محلياً."""
+    remaining = max(0.0, min(float(timeout), 8.0))
+    if remaining < 0.3:
+        return []
+    if family == socket.AF_INET6:
+        record_types = ("AAAA",)
+    elif family == socket.AF_INET:
+        record_types = ("A",)
+    else:
+        record_types = ("A", "AAAA")
+    results = []
+    for record_type in record_types:
+        url = f"https://dns.google/resolve?name={host}&type={record_type}"
+        try:
+            with urllib.request.urlopen(  # noqa: S310 - نطاق ثابت معروف عبر HTTPS
+                url, timeout=remaining
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, urllib.error.URLError, KeyError, TypeError):
+            continue
+        for answer in payload.get("Answer") or []:
+            data = str(answer.get("data") or "").strip()
+            try:
+                if record_type == "AAAA":
+                    address = ipaddress.IPv6Address(data)
+                    results.append((socket.AF_INET6, socket.SOCK_STREAM, 6, "", (str(address), port, 0, 0)))
+                else:
+                    address = ipaddress.IPv4Address(data)
+                    results.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", (str(address), port)))
+            except (ipaddress.AddressValueError, ValueError):
+                continue
+    return results
+
+
 def facebook_network_route(
     proxy_url: str = "",
     force_ipv4: bool = True,
     timeout: float = DEFAULT_NETWORK_PREFLIGHT_TIMEOUT,
 ) -> str | None:
     """Return the working route; IPv4 and IPv6 each receive the full timeout."""
-    timeout = max(1.0, min(float(timeout), 15.0))
+    route, _detail = facebook_network_route_detailed(proxy_url, force_ipv4, timeout)
+    return route
+
+
+def facebook_network_route_detailed(
+    proxy_url: str = "",
+    force_ipv4: bool = True,
+    timeout: float = DEFAULT_NETWORK_PREFLIGHT_TIMEOUT,
+):
+    """Return (route, failure) حيث failure يصنّف الفشل: DNS أم اتصال TCP."""
+    timeout = max(1.0, min(float(timeout), 30.0))
     if proxy_url:
         try:
             proxy = urlsplit(proxy_url.strip())
@@ -99,24 +151,30 @@ def facebook_network_route(
                 or proxy.fragment
                 or (port is not None and not 1 <= port <= 65535)
             ):
-                return None
+                return None, {"dns": [], "connect": [], "proxy": "invalid"}
             port = port or (443 if scheme == "https" else 1080 if scheme.startswith("socks5") else 80)
             with socket.create_connection((proxy.hostname, port), timeout=timeout):
-                return "proxy"
+                return "proxy", None
         except (OSError, ValueError):
-            return None
+            return None, {"dns": [], "connect": [], "proxy": "unreachable"}
 
     requested_families = (socket.AF_INET, socket.AF_INET6) if force_ipv4 else (socket.AF_UNSPEC,)
     grouped = {}
     deadlines = {}
     resolver_order = []
     seen = set()
+    failure = {"dns": [], "connect": []}
     for family in requested_families:
         family_deadline = time.monotonic() + timeout
         resolved = _resolve_bounded(
             "www.facebook.com", 443, family, max(0.0, family_deadline - time.monotonic())
         )
+        if not resolved and family in (socket.AF_INET, socket.AF_INET6) and DOH_FALLBACK_ENABLED:
+            resolved = _doh_resolve(
+                "www.facebook.com", 443, family, max(0.0, family_deadline - time.monotonic())
+            )
         if not resolved:
+            failure["dns"].append("IPv6" if family == socket.AF_INET6 else "IPv4")
             continue
         deadlines[family] = family_deadline
         for address_family, socktype, proto, _, address in resolved:
@@ -134,7 +192,7 @@ def facebook_network_route(
     else:
         family_order = [family for family in resolver_order if grouped.get(family)]
     if not family_order:
-        return None
+        return None, failure
 
     for address_family in family_order:
         addresses = grouped[address_family]
@@ -151,11 +209,12 @@ def facebook_network_route(
                         connection.bind(("0.0.0.0", 0))
                     connection.connect(address)
                     if address_family == socket.AF_INET6:
-                        return "ipv6"
-                    return "ipv4" if address_family == socket.AF_INET else "direct"
+                        return "ipv6", None
+                    return ("ipv4" if address_family == socket.AF_INET else "direct"), None
             except OSError:
+                failure["connect"].append("IPv6" if address_family == socket.AF_INET6 else "IPv4")
                 continue
-    return None
+    return None, failure
 
 
 def facebook_network_reachable(

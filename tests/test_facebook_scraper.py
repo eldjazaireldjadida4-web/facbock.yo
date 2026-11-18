@@ -8,7 +8,22 @@ from facebook_scraper import (
     facebook_media_id,
     facebook_network_reachable,
     facebook_network_route,
+    facebook_network_route_detailed,
 )
+
+
+class _FakeDohResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
 
 
 def test_reel_and_video_paths_become_ytdlp_supported_watch_urls():
@@ -189,3 +204,70 @@ def test_network_reachable_uses_ipv6_fallback_when_ipv4_preference_fails(monkeyp
 
 def test_transient_webdriver_error_normalizes_network_error_separators():
     assert facebook_scraper.is_transient_facebook_error(RuntimeError("net::ERR_CONNECTION_RESET"))
+
+
+def test_doh_fallback_resolves_when_local_dns_fails(monkeypatch):
+    def failing_getaddrinfo(*_args, **_kwargs):
+        raise OSError("dns blocked")
+
+    def fake_doh(host, port, family, timeout):
+        assert host == "www.facebook.com" and port == 443
+        ip = "157.240.1.35" if family == facebook_scraper.socket.AF_INET else "2a03:2880::1"
+        return [(family, facebook_scraper.socket.SOCK_STREAM, 6, "", (ip, port))]
+
+    monkeypatch.setattr(facebook_scraper.socket, "getaddrinfo", failing_getaddrinfo)
+    monkeypatch.setattr(facebook_scraper, "_doh_resolve", fake_doh)
+
+    def ok_connect(self, address):
+        assert address[0] in {"157.240.1.35", "2a03:2880::1"}
+
+    monkeypatch.setattr(facebook_scraper.socket.socket, "connect", ok_connect)
+
+    route, failure = facebook_network_route_detailed(force_ipv4=True, timeout=5)
+    assert route in {"ipv4", "ipv6"}
+    assert failure is None
+
+
+def test_doh_resolve_parses_a_and_aaaa_answers(monkeypatch):
+    import json
+
+    payload = json.dumps({
+        "Answer": [
+            {"name": "www.facebook.com.", "type": 1, "data": "157.240.1.35"},
+            {"name": "www.facebook.com.", "type": 28, "data": "2a03:2880:f277:1cd:face:b00c:0:167"},
+            {"name": "www.facebook.com.", "type": 5, "data": "star.c10r.facebook.com."},
+        ],
+    }).encode("utf-8")
+    monkeypatch.setattr(
+        facebook_scraper.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _FakeDohResponse(payload),
+    )
+
+    records = facebook_scraper._doh_resolve(
+        "www.facebook.com", 443, facebook_scraper.socket.AF_UNSPEC, 5
+    )
+    families = {record[0] for record in records}
+    assert families == {facebook_scraper.socket.AF_INET, facebook_scraper.socket.AF_INET6}
+    assert all(record[4][1] == 443 for record in records)
+
+
+def test_route_detail_classifies_dns_and_connect_failures(monkeypatch):
+    def failing_getaddrinfo(*_args, **_kwargs):
+        raise OSError("dns blocked")
+
+    monkeypatch.setattr(facebook_scraper.socket, "getaddrinfo", failing_getaddrinfo)
+    monkeypatch.setattr(facebook_scraper, "_doh_resolve", lambda *_a, **_k: [])
+
+    route, failure = facebook_network_route_detailed(force_ipv4=True, timeout=5)
+    assert route is None
+    assert failure == {"dns": ["IPv4", "IPv6"], "connect": []}
+
+
+def test_legacy_route_wrapper_still_returns_route_only(monkeypatch):
+    monkeypatch.setattr(
+        facebook_scraper,
+        "facebook_network_route_detailed",
+        lambda *_args, **_kwargs: ("ipv4", None),
+    )
+    assert facebook_network_route() == "ipv4"

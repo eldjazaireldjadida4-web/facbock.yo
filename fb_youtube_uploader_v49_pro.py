@@ -109,6 +109,7 @@ from facebook_scraper import (
     canonicalize_facebook_video_url,
     facebook_media_id,
     facebook_network_route,
+    facebook_network_route_detailed,
     is_transient_facebook_error,
 )
 
@@ -1713,7 +1714,7 @@ def _facebook_network_preflight_timeout():
         )
     except (ValueError, configparser.Error):
         timeout = DEFAULT_NETWORK_PREFLIGHT_TIMEOUT
-    return max(10, min(timeout, 15))
+    return max(10, min(timeout, 30))
 
 
 def _facebook_network_preflight(log_cb=None, proxy_override=None):
@@ -1728,15 +1729,22 @@ def _facebook_network_preflight(log_cb=None, proxy_override=None):
     except (ValueError, configparser.Error):
         proxy, force_ipv4 = "", True
     timeout = _facebook_network_preflight_timeout()
-    _FACEBOOK_NETWORK_ROUTE = facebook_network_route(proxy, force_ipv4, timeout=timeout)
+    _FACEBOOK_NETWORK_ROUTE, failure = facebook_network_route_detailed(proxy, force_ipv4, timeout=timeout)
     if _FACEBOOK_NETWORK_ROUTE == "ipv6" and force_ipv4 and not proxy and log_cb:
         log_cb("اتصال IPv4 غير متاح؛ تم التحول تلقائياً إلى IPv6، وستستمر دورة السحب.")
     if _FACEBOOK_NETWORK_ROUTE is None:
         logging.warning("Facebook network preflight failed; skipping source scraping this cycle.")
         if log_cb:
             route = "الوكيل" if proxy else "IPv4 وIPv6"
+            detail = ""
+            if failure.get("dns"):
+                detail += f"تعذّر حلّ اسم Facebook عبر DNS ({'، '.join(failure['dns'])})؛ "
+            if failure.get("connect"):
+                detail += f"فشل اتصال TCP ({'، '.join(failure['connect'])})؛ "
             log_cb(
                 f"تعذر الوصول إلى Facebook عبر {route}؛ مُنحت كل عائلة شبكة مهلة {timeout} ثوانٍ. "
+                + detail
+                + "إن كان متصفحك يفتح facebook.com فعيّن PROXY في [WATCH]، أو ارفع NETWORK_PREFLIGHT_TIMEOUT حتى 30. "
                 "لم يبدأ السحب أو الرفع؛ تبقى العناصر في قائمة الانتظار."
             )
     return _FACEBOOK_NETWORK_ROUTE is not None

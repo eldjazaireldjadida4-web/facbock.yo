@@ -255,7 +255,7 @@ def test_browser_initialization_applies_the_configured_proxy(monkeypatch):
 def test_preflight_uses_ipv6_fallback_and_does_not_bind_downloads_to_ipv4(monkeypatch):
     _reload_app(monkeypatch, {"PROXY": "", "FORCE_IPV4": "true"})
     monkeypatch.setattr(app, "_FACEBOOK_NETWORK_ROUTE", None)
-    monkeypatch.setattr(app, "facebook_network_route", lambda *_args, **_kwargs: "ipv6")
+    monkeypatch.setattr(app, "facebook_network_route_detailed", lambda *_args, **_kwargs: ("ipv6", None))
     logs = []
 
     assert app._facebook_network_preflight(logs.append) is True
@@ -267,7 +267,7 @@ def test_preflight_uses_ipv6_fallback_and_does_not_bind_downloads_to_ipv4(monkey
 def test_failed_preflight_reports_both_address_families(monkeypatch):
     _reload_app(monkeypatch, {"PROXY": "", "FORCE_IPV4": "true"})
     monkeypatch.setattr(app, "_FACEBOOK_NETWORK_ROUTE", None)
-    monkeypatch.setattr(app, "facebook_network_route", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app, "facebook_network_route_detailed", lambda *_args, **_kwargs: (None, {"dns": ["IPv4", "IPv6"], "connect": []}))
     logs = []
 
     assert app._facebook_network_preflight(logs.append) is False
