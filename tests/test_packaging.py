@@ -121,6 +121,29 @@ def test_inno_setup_never_ships_secrets() -> None:
     assert "onlyifdoesntexist" in text
 
 
+def test_inno_setup_tasks_flags_are_valid() -> None:
+    """[Tasks] Flags must be real Inno Setup flags.
+
+    There is no "checked" flag: a task is checked by default, and the
+    opt-out is "unchecked". ISCC 6.7.1 aborted the v4.49.29 installer
+    build on `Flags: checked` ("Parameter Flags includes an unknown
+    flag"), so pin the documented set here.
+    """
+    valid = {"checkablealone", "checkedonce", "dontinheritcheck", "exclusive", "restart", "unchecked"}
+    text = ISS.read_text(encoding="utf-8")
+    tasks_section = text.split("[Tasks]", 1)[1].split("[", 1)[0]
+    flags_seen = []
+    for line in tasks_section.splitlines():
+        line = line.strip()
+        if "Flags:" not in line:
+            continue
+        flags = line.split("Flags:", 1)[1].strip().split()
+        flags_seen.extend(flags)
+        for flag in flags:
+            assert flag in valid, f"unknown [Tasks] flag in installer/facbock-yo.iss: {flag}"
+    assert flags_seen or True  # a [Tasks] entry without Flags is fine (checked by default)
+
+
 def test_inno_setup_version_default_matches_version_py() -> None:
     text = ISS.read_text(encoding="utf-8")
     match = re.search(r'#define AppVersion "([^"]+)"', text)
