@@ -1,3 +1,31 @@
+## 4.49.26 — 2026-11-18
+
+### حزمة تثبيت + إصلاح مسارات النسخة المجمّدة (PyInstaller)
+
+- حزمة تثبيت جديدة: `facbock-yo.spec` (PyInstaller one-dir: التطبيق
+  و`facbock-yo-doctor` و`facbock-yo-automation` في حزمة واحدة)، مع
+  `build_windows.bat` و`build_linux.sh` ومثبّت Inno Setup
+  (`installer/facbock-yo.iss`, تثبيت للمستخدم لا لـ Program Files)،
+  وسير عمل إصدار GitHub (`.github/workflows/release.yml`) يبني المثبّت
+  على windows-latest ويرفعه أصل إصدار. التوثيق الكامل في
+  `docs/packaging.md`.
+- إصلاح حقيقي اكتُشف أثناء التحقق من الحزمة: في حزمة one-dir يشير
+  `__file__` إلى داخل مجلد `_internal`، فكان `APP_DIRECTORY` هناك —
+  وتُجاهل `config.ini` في مجلد التثبيت، وفشل فحص الجاهزية برسالة «لم
+  يُعثر على أداة التشخيص: .../_internal/doctor.py». الآن `APP_DIRECTORY`
+  يُحلّ من المنفّذ (`sys.executable`) في الوضع المجمّد في الملف الرئيسي
+  و`doctor.py` و`enable_automation.py`؛ و`run_readiness_check` يشغّل
+  المنفّذ المجمّد `facbock-yo-doctor` في الوضع المجمّد؛ وزر فحص الجاهزية
+  في الواجهة يمرّر `APP_DIRECTORY` بدل إعادة حسابه من `__file__`؛
+  وتحديث yt-dlp الذاتي معطّل في النسخة المثبّتة برسالة نظيفة (لا Python
+  ولا pip داخلها)؛ ومراجعة المحتوى تعيد `content_review_python_not_found`
+  بدل تشغيل التطبيق نفسه كمفسّر في الوضع المجمّد.
+- التفريغ المحلي (`faster-whisper`) مستثنى من الحزمة قصداً: ميزة اختيارية
+  تعطّلها نظيف (`LocalTranscriptionError`) وتضمينها كان سيضيف مئات
+  الميغابايتات؛ وFFmpeg خارجي عبر `PATH` (يُثبَّت بـ winget).
+- 8 اختبارات جديدة في `tests/test_frozen_paths.py` و10 في
+  `tests/test_packaging.py` (عقد: لا أسرار في الحزمة، وتثبيت للمستخدم).
+
 ## 4.49.25 — 2026-11-18
 
 ### جولة تدقيق التقوية: 15 إصلاحاً من ثلاث مراجعات للقراءة فقط

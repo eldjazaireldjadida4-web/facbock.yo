@@ -34,11 +34,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+.venv-build/
 venv/
 .coverage
 .coverage.*
 htmlcov/
 dist/
 build/
+installer-output/
 *.tmp
 *.safety-review.json

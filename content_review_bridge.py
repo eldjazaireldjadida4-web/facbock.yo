@@ -171,7 +171,12 @@ def run_review(
             root / ".venv" / "Scripts" / "python.exe",
             root / ".venv" / "bin" / "python",
         ]
-        python_path = next((item for item in candidates if item.is_file()), Path(sys.executable))
+        python_path = next((item for item in candidates if item.is_file()), None)
+        if python_path is None:
+            if getattr(sys, "frozen", False):
+                # في النسخة المثبّتة sys.executable هو التطبيق نفسه لا Python.
+                return None, "content_review_python_not_found"
+            python_path = Path(sys.executable)
     python_path = python_path.resolve()
     destination = video.with_name(video.name + ".safety-review.json")
     command = _review_command(python_path, video, title, caption)

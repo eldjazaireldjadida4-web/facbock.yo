@@ -62,13 +62,29 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirement
 - CI (.github/workflows/ci.yml): مصفوفة Windows/Linux × Python 3.11/3.12/3.14،
   مع `pip check` و`pip-audit` على `requirements-lock.txt`. ملف القفل
   يستخدم علامات إصدار Python لـ `av` و`numpy` فقط (انظر «الحالة الحالية»).
+- التغليف (docs/packaging.md): حزمة PyInstaller one-dir عبر
+  `facbock-yo.spec` (`build_windows.bat` / `build_linux.sh`)، ومثبّت
+  Inno Setup (`installer/facbock-yo.iss`) يثبّت للمستخدم
+  (`{localappdata}\Programs\facbock.yo`) لا لـ Program Files، وسير عمل
+  إصدار (`.github/workflows/release.yml`) يبني المثبّت على windows-latest
+  عند وسم `v*`. قاعدة حرجة: في حزمة one-dir يشير `__file__` إلى داخل
+  `_internal`، لذلك تُحلّ `APP_DIRECTORY` من `sys.executable` في الوضع
+  المجمّد (`_resolve_app_directory`)، وملفات البيانات المجمّعة تسكن
+  `_internal` بينما الأمثلة تُنسخ أيضاً إلى جذر الحزمة. التفريغ المحلي
+  (`faster-whisper`) مستثنى من الحزمة قصداً؛ وFFmpeg خارجي عبر `PATH`.
 - متطلبات على جهاز المستخدم لا يمكن محاكاتها هنا: متصفح Chrome،
   `client_secrets.json` (OAuth من Google Cloud)، ورمز حساب YouTube
   (`<account>_token.json`)، وكوكيز فيسبوك اختيارية في `[WATCH]`.
 
 ## الحالة الحالية
 
-- الإصدار الحالي: **4.49.25** (جولة تدقيق تقوية: إصلاح الحالة البنيوي
+- الإصدار الحالي: **4.49.26** (تغليف للتثبيت: حزمة PyInstaller one-dir
+  ومثبّت Inno Setup للمستخدم وسير عمل إصدار؛ وإصلاح مسارات النسخة
+  المجمّدة — `APP_DIRECTORY` من المنفّذ لا من `_internal`، وفحص الجاهزية
+  يشغّل `facbock-yo-doctor` المجمّد، وتعطيل تحديث yt-dlp الذاتي في
+  النسخة المثبّتة. 8 اختبارات مسارات مجمّدة و10 اختبارات تغليف جديدة؛
+  المجموعة الكاملة 784 ناجحاً واختباران متخطيان تحت 3.12.3). الإصدار
+  السابق **4.49.25** (جولة تدقيق تقوية: إصلاح الحالة البنيوي
   مع سجل الحقوق، بصمة مطالبة AI، دعم socks4، رفض VIDEO_DIRECTORY
   الملفّي، DNS وكيل محدود، doctor للروابط الرمزية، خطأ كتابة
   enable_automation، تحقق AI.MODEL، قص Shorts بأبعاد فردية، كشف المدة

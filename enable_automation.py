@@ -27,7 +27,15 @@ from pathlib import Path
 
 from config_store import ConfigRecoveryError, read_config, write_config_atomically
 
-APP_DIR = Path(__file__).resolve().parent
+def _resolve_app_dir() -> Path:
+    """مجلد البرنامج: في النسخة المجمّدة يشير ``__file__`` إلى ``_internal``،
+    فيُحلّ المسار من المنفّذ بدلاً منه (انظر الملف الرئيسي)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+APP_DIR = _resolve_app_dir()
 CONFIG_PATH = APP_DIR / "config.ini"
 
 RIGHTS_GATE_AUTO = "operator_confirmed"

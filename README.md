@@ -2,9 +2,15 @@
 
 [![CI](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml/badge.svg)](https://github.com/eldjazaireldjadida4-web/facbock.yo/actions/workflows/ci.yml)
 
-أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.25**.
+أداة مكتبية مكتوبة بـPython لإدارة مراجعة مقاطع Facebook ونشرها على YouTube، مع فحص مسبق، ومتابعة سجلّ الحقوق، وإعادة المحاولة. إصدار التطوير الحالي: **4.49.26**.
 
 سجل الإصدارات: `CHANGELOG.md`. كل دفع إلى `main` يشغّل الاختبارات و`ruff` و`compileall` و`pip check` و`pip-audit` على Ubuntu وWindows مع Python 3.11 و3.12 و3.14 عبر GitHub Actions (`.github/workflows/ci.yml`).
+
+### حزمة التثبيت — 4.49.26
+
+- حزمة تثبيت حقيقية لنظام Windows (وملف Linux): `facbock-yo.spec` (PyInstaller one-dir) مع `build_windows.bat` و`build_linux.sh` ومثبّت Inno Setup في `installer/facbock-yo.iss`؛ التفاصيل الكاملة في `docs/packaging.md`.
+- إصلاح مسارات النسخة المجمّدة: في حزمة one-dir يشير `__file__` إلى داخل مجلد `_internal`، فصارت `APP_DIRECTORY` تُحلّ من المنفّذ (`sys.executable`) في الوضع المجمّد، وفحص الجاهزية يشغّل المنفّذ المجمّد `facbock-yo-doctor` بدل `doctor.py`، وتحديث yt-dlp الذاتي معطّل في النسخة المثبّتة برسالة نظيفة.
+- `docs/validation/FINAL_VALIDATION_4.49.26.md`: نتائج الإصدار الحالي (سبب المشكلة وإعادة إنتاجها والإصلاح والتحقق).
 
 ### جولة تدقيق التقوية — 4.49.25
 

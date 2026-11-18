@@ -27,7 +27,15 @@ from content_safety import (
 from facebook_auth import inspect_facebook_cookies
 from facebook_scraper import DEFAULT_NETWORK_PREFLIGHT_TIMEOUT, facebook_network_route
 
-APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+def _resolve_app_directory() -> str:
+    """مجلد البرنامج: في النسخة المجمّدة يشير ``__file__`` إلى ``_internal``،
+    فيُحلّ المسار من المنفّذ بدلاً منه (انظر الملف الرئيسي)."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIRECTORY = _resolve_app_directory()
 
 OK, WARN, BAD, INFO = "[OK]", "[تحذير]", "[فشل]", "[معلومة]"
 

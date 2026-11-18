@@ -545,12 +545,20 @@ def automation_exit_code(result: Mapping[str, Any] | None, interrupted: bool = F
 
 def run_readiness_check(project_directory: str | Path, timeout: int = 90) -> tuple[int, str]:
     root = Path(project_directory).expanduser().resolve()
-    doctor = root / "doctor.py"
+    if getattr(sys, "frozen", False):
+        # النسخة المثبّتة: لا doctor.py قابل للتشغيل ولا Python؛ المنفّذ
+        # المجمّد facbock-yo-doctor يجلس بجانب التطبيق في مجلد التثبيت.
+        exe_name = "facbock-yo-doctor.exe" if os.name == "nt" else "facbock-yo-doctor"
+        doctor = root / exe_name
+        command = [str(doctor)]
+    else:
+        doctor = root / "doctor.py"
+        command = [sys.executable, str(doctor)]
     if not doctor.is_file():
         return 2, f"لم يُعثر على أداة التشخيص: {doctor}"
     try:
         result = subprocess.run(
-            [sys.executable, str(doctor)],
+            command,
             cwd=root,
             capture_output=True,
             text=True,

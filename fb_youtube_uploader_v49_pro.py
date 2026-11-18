@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.25 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.26 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -190,7 +190,22 @@ FSM = ("Segoe UI", 9)
 FM  = ("Consolas", 10)
 
 from version import APP_VERSION as __version__
-APP_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_app_directory() -> str:
+    """مجلد البرنامج وملفات حالته القابلة للكتابة.
+
+    في النسخة المجمّدة (PyInstaller one-dir) يشير ``__file__`` إلى داخل
+    مجلد ``_internal`` للمكتبات، فيُحلّ المسار من المنفّذ بدلاً منه —
+    وإلا وُضعت config.ini والرموز والإيصالات داخل ``_internal`` وتُجاهل
+    نسخة مجلد التثبيت التي يضعها المثبّت.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIRECTORY = _resolve_app_directory()
 
 
 def _app_path(path):
@@ -4472,6 +4487,11 @@ class App:
             self._log(f"تعذر تحرير العناصر المعلّقة: {error}")
 
     def _update_ytdlp(self):
+        if getattr(sys, "frozen", False):
+            # لا Python ولا pip داخل النسخة المثبّتة؛ yt-dlp مضمّن مع الحزمة
+            # ويُحدَّث عبر مثبّت جديد، لا من داخل التطبيق.
+            self._log("تحديث yt-dlp غير متاح في النسخة المثبّتة؛ يأتي مضمّناً مع الحزمة.")
+            return
         if getattr(self, "_ytdlp_update_running", False):
             self._log("تحديث yt-dlp يعمل بالفعل؛ انتظر انتهاءه.")
             return
@@ -4855,7 +4875,7 @@ class App:
 
         def worker():
             try:
-                result = run_readiness_check(os.path.dirname(os.path.abspath(__file__)))
+                result = run_readiness_check(APP_DIRECTORY)
             except Exception as error:
                 logging.exception("تعذر إكمال فحص الجاهزية")
                 result = (2, f"تعذر إكمال فحص الجاهزية: {error}")
