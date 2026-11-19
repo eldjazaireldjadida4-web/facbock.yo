@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   FB → YouTube Uploader  v4.49.30 PRO — Reliable Core      ║
+║   FB → YouTube Uploader  v4.49.31 PRO — Reliable Core      ║
 ║   سجل رفع آمن • سحب أوضح • إعدادات اعتماديات موحّدة         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -161,6 +161,10 @@ from control_plane import (
 
     build_upload_review_warnings,
     release_policy_holds,
+    release_policy_holds_for_ids,
+    filter_bulk_review_items,
+    queue_reason_label,
+    QUEUE_REASON_LABELS,
     release_rights_holds,
     run_policy_review,
     run_readiness_check,
@@ -2657,6 +2661,37 @@ class StatsCard:
         self.vars["today_uploaded"].set(str(today))
         self.vars["disk_free"].set(f"{disk_free_gb()} GB")
 
+def _shortcut_typing_focus(focused):
+    """صحيح عندما يكون التركيز في حقل نصي، فتمنع الاختصارات أحادية الحرف.
+
+    تُستخدم في نافذة المراجعة ونافذة المراجعة السريعة: حرف مثل A أو R أثناء
+    الكتابة في العنوان أو البحث يجب أن يُكتب، لا أن ينفّذ أمراً.
+    """
+    if focused is None:
+        return False
+    try:
+        return focused.winfo_class() in {"Entry", "Text", "TCombobox", "Spinbox"}
+    except Exception:
+        return False
+
+
+def initial_rights_form(payload_rights, remembered):
+    """قيم نموذج الحقوق الأولية في حوار المراجعة.
+
+    النموذج المُتذكَّر من فيديو سابق في الدورة نفسها يغلب على سجل الفيديو
+    الحالي لتوفير إعادة الكتابة؛ الإقرار دائماً False — كل فيديو يحتاج
+    تأكيداً صريحاً جديداً، ولا يُورَّث أبداً.
+    """
+    remembered = remembered or {}
+    payload_rights = payload_rights or {}
+    return {
+        "rights_basis": remembered.get("rights_basis") or payload_rights.get("rights_basis", ""),
+        "evidence_reference": remembered.get("evidence_reference") or payload_rights.get("evidence_reference", ""),
+        "original_contribution": remembered.get("original_contribution") or payload_rights.get("original_contribution", ""),
+        "attested": False,
+    }
+
+
 def wait_for_review_decision(ui_queue, stop_event, payload, poll_interval=0.2):
     request = {"payload": payload, "decision": {}, "ready": threading.Event()}
     ui_queue.put(("review_request", request))
@@ -2716,6 +2751,12 @@ class App:
         self._last_log_replace = False
         self._watching = False
         self._pending_review = None
+        # المراجعة السريعة: نموذج الحقوق الأخير (أساس/مرجع/إضافة) يُعبَّأ منه
+        # الحوار التالي في الدورة نفسها لتوفير إعادة الكتابة، أما الإقرار
+        # فيُصفَّر دائماً فيعيد المستخدم تأكيده لكل فيديو على حدة.
+        self._last_rights_form = None
+        self._run_review_count = 0
+        self._bulk_review_window = None
         self._closing = False
 
         self._preflight_running = False
@@ -4620,6 +4661,288 @@ class App:
         except Exception as error:
             self._log(f"تعذر تحرير العناصر المعلّقة: {error}")
 
+    # ─────────── المراجعة السريعة بالجملة ───────────
+    def _bulk_release_errors(self, selected):
+        """أخطاء تمنع تحرير عناصر محددة، بنفس شروط التحرير الجماعي الحالي.
+
+        عنصر محجوب بالأمان لا يُحرَّر وبوابة الأمان معطّلة أو غير مكتملة،
+        وعنصر محجوب بالنشر لا يُحرَّر وإعدادات النشر غير مكتملة، وعنصر
+        محجوب بالحقوق لا يُحرَّر وإقرار المشغل غير مكتمل في الوضع الصارم.
+        """
+        errors = []
+        reasons = {str(item.get("last_error") or "") for item in selected}
+        if "content_safety_review_required" in reasons:
+            if not self.content_review_enabled_var.get():
+                errors.append("فعّل بوابة مراجعة المحتوى وصحّح إعداداتها قبل تحرير عناصرها.")
+            else:
+                errors.extend(validate_content_review_settings(
+                    True,
+                    self.cutter_root_var.get().strip(),
+                    self.cutter_python_var.get().strip(),
+                ))
+        if "publication_approval_required" in reasons:
+            errors.extend(validate_publication_controls(
+                self.priv_var.get(),
+                self.sched_var.get(),
+                self.review_before_upload_var.get(),
+                self.allow_public_automation_var.get(),
+                dry_run=self.dry_run_var.get(),
+            ))
+        if "rights_review_required" in reasons:
+            rights_settings = {
+                "rights_gate_mode": self.rights_gate_var.get(),
+                "rights_operator_basis": self.rights_basis_var.get(),
+                "rights_operator_statement": self.rights_statement_e.get().strip(),
+                "rights_operator_evidence": self.rights_evidence_e.get().strip(),
+                "review_before_upload": self.review_before_upload_var.get(),
+                "dry_run": self.dry_run_var.get(),
+            }
+            errors.extend(automatic_rights_preflight_errors(rights_settings))
+            if (
+                not rights_settings["review_before_upload"]
+                and not rights_settings["dry_run"]
+                and str(rights_settings["rights_gate_mode"]).strip().lower() == "strict"
+            ):
+                errors.append(
+                    "فعّل المراجعة اليدوية لكل فيديو أو أكمل إقرار المشغل الحقيقي قبل إعادة العناصر إلى قائمة العمل."
+                )
+        return errors
+
+    def _open_bulk_review(self):
+        """نافذة المراجعة السريعة لقائمة الانتظار: تصفية وتحديد جماعي.
+
+        إجراءاتها فرز فقط: إعادة الإدراج تعيد العنصر إلى قائمة العمل ليفحص
+        مجدداً في الدورة التالية (ويبقى رفعه خاضعاً لنافذة المراجعة وبوابة
+        الحقوق)، والحذف يزيله من القائمة؛ لا موافقة على الرفع تحدث هنا أبداً.
+        """
+        if getattr(self, "_bulk_review_window", None) is not None:
+            try:
+                window = self._bulk_review_window
+                if window.winfo_exists():
+                    window.lift()
+                    return
+            except tk.TclError:
+                pass
+            self._bulk_review_window = None
+        if self._watching or (self._thread is not None and self._thread.is_alive()):
+            messagebox.showwarning("العامل يعمل", "أوقف العامل قبل مراجعة قائمة الانتظار.", parent=self.root)
+            return
+        lock = self._queue_edit_lock("مراجعة قائمة الانتظار")
+        if lock is None:
+            return
+        try:
+            self._open_bulk_review_locked(lock)
+        except Exception as error:
+            try:
+                lock.release()
+            except Exception:
+                pass
+            self._log(f"تعذر فتح المراجعة السريعة: {error}")
+
+    def _open_bulk_review_locked(self, lock):
+        items = load_failed_queue()
+        if not items:
+            lock.release()
+            messagebox.showinfo("قائمة الانتظار فارغة", "لا توجد عناصر فاشلة أو محجوبة تحتاج إلى مراجعة.", parent=self.root)
+            return
+        window = tk.Toplevel(self.root)
+        self._bulk_review_window = window
+        window.title("مراجعة سريعة — قائمة الانتظار")
+        window.transient(self.root)
+        screen_w = window.winfo_screenwidth()
+        screen_h = window.winfo_screenheight()
+        width = max(760, min(1100, screen_w - 60))
+        height = max(520, min(760, screen_h - 80))
+        window.geometry(f"{width}x{height}")
+        window.minsize(720, 480)
+        window.configure(bg=BG)
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(2, weight=1)
+
+        released_lock = [False]
+
+        def close_window():
+            if not released_lock[0]:
+                released_lock[0] = True
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+            self._bulk_review_window = None
+            try:
+                if window.winfo_exists():
+                    window.destroy()
+            except tk.TclError:
+                pass
+
+        state = {"items": items, "reason": "", "query": ""}
+
+        header = tk.Frame(window, bg=PANEL, padx=16, pady=10)
+        header.grid(row=0, column=0, sticky="ew")
+        tk.Label(header, text="مراجعة سريعة — قائمة الانتظار", bg=PANEL, fg=TXT,
+                 font=("Segoe UI Semibold", 15, "bold")).pack(anchor="e")
+        tk.Label(header, text="إعادة الإدراج تعيد العنصر إلى قائمة العمل ليفحص مجدداً؛ "
+                              "لا يُرفع أي عنصر من هنا.",
+                 bg=PANEL, fg=TXT2, font=FSM).pack(anchor="e", pady=(2, 0))
+
+        filters = tk.Frame(window, bg=BG, padx=16, pady=8)
+        filters.grid(row=1, column=0, sticky="ew")
+        filters.grid_columnconfigure(1, weight=1)
+        tk.Label(filters, text="السبب:", bg=BG, fg=TXT, font=FB).grid(row=0, column=0, sticky="e")
+        reasons_present = []
+        for error, label in QUEUE_REASON_LABELS.items():
+            if any(str(item.get("last_error") or "") == error for item in items):
+                reasons_present.append((label, error))
+        unknown_errors = sorted({str(item.get("last_error") or "")
+                                 for item in items if str(item.get("last_error") or "")
+                                 and str(item.get("last_error") or "") not in QUEUE_REASON_LABELS})
+        for error in unknown_errors:
+            reasons_present.append((error, error))
+        reason_labels = ["الكل", *[label for label, _error in reasons_present]]
+        reason_by_label = {label: error for label, error in reasons_present}
+        reason_var = tk.StringVar(value="الكل")
+        reason_combo = ttk.Combobox(filters, textvariable=reason_var, values=reason_labels,
+                                    state="readonly", justify="right", width=28)
+        reason_combo.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        tk.Label(filters, text="بحث (صفحة/عنوان):", bg=BG, fg=TXT, font=FB).grid(row=0, column=2, sticky="e", padx=(16, 0))
+        query_var = tk.StringVar(value="")
+        query_entry = tk.Entry(filters, textvariable=query_var, bg=INP, fg=TXT,
+                               insertbackground=TXT, relief="flat", justify="right",
+                               font=FB, highlightthickness=1, highlightbackground=BORDER)
+        query_entry.grid(row=0, column=3, sticky="ew", padx=(8, 0), ipady=4)
+        count_var = tk.StringVar(value="")
+        tk.Label(filters, textvariable=count_var, bg=BG, fg=INFO, font=FB).grid(row=1, column=0, columnspan=4, sticky="e", pady=(6, 0))
+
+        body = tk.Frame(window, bg=BG, padx=16)
+        body.grid(row=2, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        cols = ("العنوان", "الصفحة", "السبب", "المحاولات")
+        tree = ttk.Treeview(body, columns=cols, show="headings", height=14, selectmode="extended")
+        for col, w in zip(cols, [420, 200, 180, 80]):
+            tree.heading(col, text=col)
+            tree.column(col, width=w, anchor="center" if col != "العنوان" else "e")
+        vsb = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        def refresh():
+            for child in tree.get_children():
+                tree.delete(child)
+            shown = filter_bulk_review_items(state["items"], state["reason"], state["query"])
+            for item in shown:
+                source_id = str(item.get("id") or "").strip()
+                if not source_id:
+                    continue
+                tree.insert("", "end", iid=source_id, values=(
+                    str(item.get("upload_title") or item.get("title") or "بدون عنوان")[:90],
+                    str(item.get("page") or "—")[:40],
+                    queue_reason_label(item.get("last_error")),
+                    str(item.get("attempts", 0)),
+                ))
+            count_var.set(f"المعروض: {len(shown)} من {len(state['items'])}")
+
+        def apply_filters(*_args):
+            state["reason"] = reason_by_label.get(reason_var.get(), "")
+            state["query"] = query_var.get()
+            refresh()
+
+        reason_combo.bind("<<ComboboxSelected>>", apply_filters)
+        query_var.trace_add("write", apply_filters)
+        refresh()
+
+        def selected_ids():
+            return [str(iid).strip() for iid in tree.selection() if str(iid).strip()]
+
+        def requeue_selected():
+            ids = selected_ids()
+            if not ids:
+                messagebox.showinfo("لا يوجد تحديد", "حدّد عنصراً واحداً على الأقل لإعادة إدراجه.", parent=window)
+                return
+            if not messagebox.askyesno(
+                "إعادة إدراج المحدد",
+                f"ستعود {len(ids)} عناصر إلى قائمة العمل فقط، ولن تُرفع الآن؛ "
+                "ستُفحص مجدداً في الدورة التالية. هل تريد المتابعة؟",
+                parent=window,
+            ):
+                return
+            selected = [item for item in state["items"]
+                        if str(item.get("id") or "").strip() in set(ids)]
+            release_errors = self._bulk_release_errors(selected)
+            if release_errors:
+                messagebox.showwarning(
+                    "إعدادات البوابة غير مكتملة",
+                    "\n".join(release_errors),
+                    parent=window,
+                )
+                return
+            released, count = release_policy_holds_for_ids(state["items"], ids)
+            if count:
+                save_failed_queue(released)
+                state["items"] = released
+                self._log(f"أعيد إدراج {count} عناصر من المراجعة السريعة.")
+            else:
+                messagebox.showinfo("لا تغيير", "لا توجد عناصر قابلة للتحرير ضمن المحدد.", parent=window)
+            refresh()
+
+        def delete_selected():
+            ids = selected_ids()
+            if not ids:
+                messagebox.showinfo("لا يوجد تحديد", "حدّد عنصراً واحداً على الأقل لحذفه.", parent=window)
+                return
+            if not messagebox.askyesno(
+                "حذف المحدد",
+                f"سيُحذف {len(ids)} عناصر نهائياً من قائمة الانتظار. هل أنت متأكد؟",
+                parent=window,
+            ):
+                return
+            remaining = state["items"]
+            for source_id in ids:
+                remaining = remove_queue_item(remaining, source_id)
+            save_failed_queue(remaining)
+            state["items"] = remaining
+            self._log(f"حُذف {len(ids)} عناصر من قائمة الانتظار.")
+            refresh()
+
+        def select_all_visible():
+            tree.selection_set(tree.get_children())
+
+        def toggle_focused():
+            focused = tree.focus()
+            if not focused:
+                return
+            if focused in tree.selection():
+                tree.selection_remove(focused)
+            else:
+                tree.selection_add(focused)
+            return "break"
+
+        footer = tk.Frame(window, bg=PANEL, padx=16, pady=12)
+        footer.grid(row=3, column=0, sticky="ew")
+        tk.Label(footer, text="R: إعادة إدراج المحدد  •  Delete: حذف المحدد  •  A: تحديد الكل  •  "
+                              "مسافة: تبديل التحديد  •  Esc: إغلاق",
+                 bg=PANEL, fg=TXT2, font=FSM).pack(anchor="e", pady=(0, 8))
+        actions = tk.Frame(footer, bg=PANEL)
+        actions.pack(fill="x")
+        Btn(actions, "إغلاق", close_window, "#455a64").pack(side="left")
+        Btn(actions, "حذف المحدد", delete_selected, ERR).pack(side="left", padx=8)
+        Btn(actions, "إعادة إدراج المحدد", requeue_selected, SUCCESS).pack(side="right")
+
+        def _bulk_key_allowed():
+            return not _shortcut_typing_focus(window.focus_get())
+
+        tree.bind("<space>", lambda _event: toggle_focused())
+        window.bind("<KeyPress-r>", lambda _event: _bulk_key_allowed() and requeue_selected())
+        window.bind("<KeyPress-R>", lambda _event: _bulk_key_allowed() and requeue_selected())
+        window.bind("<KeyPress-a>", lambda _event: _bulk_key_allowed() and select_all_visible())
+        window.bind("<KeyPress-A>", lambda _event: _bulk_key_allowed() and select_all_visible())
+        window.bind("<Delete>", lambda _event: _bulk_key_allowed() and delete_selected())
+        window.bind("<Escape>", lambda _event: close_window())
+        window.protocol("WM_DELETE_WINDOW", close_window)
+        window.grab_set()
+        tree.focus_set()
+
     def _update_ytdlp(self):
         if getattr(sys, "frozen", False):
             # لا Python ولا pip داخل النسخة المثبّتة؛ yt-dlp مضمّن مع الحزمة
@@ -4983,6 +5306,7 @@ class App:
         row = tk.Frame(out, bg=BG); row.pack(pady=10)
         Btn(row, "تحديث البيانات", lambda: self.stats_card.refresh(), color="#455a64").pack(side="left", padx=5)
         Btn(row, "فتح الأرشيف", self._open_history, color="#37474f").pack(side="left", padx=5)
+        Btn(row, "مراجعة سريعة لقائمة الانتظار", self._open_bulk_review, color="#2e7d32").pack(side="left", padx=5)
         self._preflight_btn = Btn(row, "فحص الجاهزية", self._start_readiness_check, color="#1f6feb")
         self._preflight_btn.pack(side="left", padx=5)
         tk.Label(
@@ -5152,6 +5476,9 @@ class App:
         tk.Label(top, text=f"الصفحة: {payload.get('page') or 'غير محددة'}  •  "
                            f"المدة: {int(payload.get('duration') or 0)} ثانية",
                  bg=PANEL, fg=TXT2, font=FSM).pack(anchor="e", pady=(4, 0))
+        tk.Label(top, text=f"راجعت {getattr(self, '_run_review_count', 0)} في هذه الدورة  •  "
+                           "Ctrl+Enter: موافقة  •  S: تخطي  •  A: موافقة",
+                 bg=PANEL, fg=INFO, font=FSM).pack(anchor="e", pady=(2, 0))
         review_tags = payload.get("tags") or []
         if isinstance(review_tags, str):
             review_tags = [review_tags]
@@ -5302,11 +5629,14 @@ class App:
                      bg=CARD, fg=TXT2, font=FSM).pack(side="right", padx=10)
 
         initial_rights = payload.get("rights_record") or {}
+        remembered = getattr(self, "_last_rights_form", None) or {}
+        rights_form = initial_rights_form(initial_rights, remembered)
         basis_choices = ["اختر أساس حقوق الاستخدام…", *RIGHTS_BASIS_LABELS.values()]
         basis_var = tk.StringVar(value=RIGHTS_BASIS_LABELS.get(
-            initial_rights.get("rights_basis", ""), basis_choices[0]))
-        evidence_var = tk.StringVar(value=initial_rights.get("evidence_reference", ""))
-        attested_var = tk.BooleanVar(value=initial_rights.get("attested") is True)
+            rights_form["rights_basis"], basis_choices[0]))
+        evidence_var = tk.StringVar(value=rights_form["evidence_reference"])
+        # الإقرار لا يُورَّث أبداً: كل فيديو يحتاج تأكيداً صريحاً جديداً.
+        attested_var = tk.BooleanVar(value=rights_form["attested"])
         rights_box = tk.LabelFrame(
             fields, text="الحقوق والإضافة التحريرية الأصلية", bg=CARD, fg=TXT,
             padx=10, pady=6, font=FB
@@ -5333,7 +5663,7 @@ class App:
             insertbackground=TXT, relief="flat", font=FB,
             highlightthickness=1, highlightbackground=BORDER)
         contribution_text.grid(row=5, column=0, sticky="ew", pady=(2, 6))
-        contribution_text.insert("1.0", initial_rights.get("original_contribution", ""))
+        contribution_text.insert("1.0", rights_form["original_contribution"])
         tk.Label(rights_box, text="إذا ظهر تشابه: وضّح الفرق الفعلي عن الفيديو السابق:",
                  bg=CARD, fg=TXT, font=FB).grid(row=6, column=0, sticky="e")
         duplicate_note_text = tk.Text(
@@ -5399,6 +5729,13 @@ class App:
                         parent=window,
                     )
                     return
+                # يُعبَّأ نموذج الحقوق في الحوار التالي من هذا الفيديو؛
+                # الإقرار نفسه لا يُورَّث ويبقى تأكيداً صريحاً لكل فيديو.
+                self._last_rights_form = {
+                    "rights_basis": selected_basis,
+                    "evidence_reference": evidence_var.get(),
+                    "original_contribution": contribution_text.get("1.0", "end-1c"),
+                }
                 selected_privacy = "private" if scheduled else next(
                     (key for key, value in privacy_names.items() if value == privacy_var.get()),
                     "private")
@@ -5422,6 +5759,8 @@ class App:
                                  "thumbnail_path": thumbnail_for_upload,
                                  "rights_record": rights_record})
             request["decision"].update(decision)
+            if action in ("approve", "skip"):
+                self._run_review_count = getattr(self, "_run_review_count", 0) + 1
             request["ready"].set()
             self._pending_review = None
             try:
@@ -5444,6 +5783,16 @@ class App:
         Btn(actions, "موافقة ورفع", lambda: finish("approve"), SUCCESS).pack(side="right")
         window.protocol("WM_DELETE_WINDOW", lambda: finish("skip"))
         window.bind("<Escape>", lambda _event: finish("skip"))
+
+        def _review_key_allowed():
+            """الاختصارات أحادية الحرف لا تعمل أثناء الكتابة في حقل نصي."""
+            return not _shortcut_typing_focus(window.focus_get())
+
+        window.bind("<Control-Return>", lambda _event: finish("approve"))
+        window.bind("<KeyPress-a>", lambda _event: _review_key_allowed() and finish("approve"))
+        window.bind("<KeyPress-A>", lambda _event: _review_key_allowed() and finish("approve"))
+        window.bind("<KeyPress-s>", lambda _event: _review_key_allowed() and finish("skip"))
+        window.bind("<KeyPress-S>", lambda _event: _review_key_allowed() and finish("skip"))
         window.grab_set()
         window.lift()
         title_entry.focus_set()
@@ -5850,6 +6199,8 @@ class App:
             self._log(f"لم يبدأ التشغيل بسبب إعداد مسار غير صالح: {error}")
             return
         self._stop.clear()
+        self._last_rights_form = None
+        self._run_review_count = 0
         self._watching = watch_mode
         self.start_once_btn.config(state="disabled")
         self.watch_btn.config(state="disabled")

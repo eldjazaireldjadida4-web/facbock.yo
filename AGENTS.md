@@ -16,7 +16,7 @@
 | `texttools.py` | تطبيع العناوين والوسوم والوصف وحدود YouTube |
 | `ai_client.py` | عميل Gemini وتدوير المفاتيح وتنقيح المخرجات |
 | `content_review_bridge.py` | بوابة مراجعة المحتوى وربطها بقرارات المشغّل |
-| `control_plane.py` | فلاتر النشر (`validate_publication_controls`)، استخراج معرف الفيديو، إدارة الإيقاف، دورة حياة الإيصالات (`begin_upload_attempt`، `mark_upload_result_unknown`، `reconcile_upload_result`) — إيصالات الرفع (`load_upload_receipts`/`compact_upload_receipts`/`save_upload_receipts` و`UPLOAD_RECEIPTS_FILE`) تبقى في الملف الرئيسي لأن اختباراتها تخترق ثوابت المسارات على `app` |
+| `control_plane.py` | فلاتر النشر (`validate_publication_controls`)، استخراج معرف الفيديو، إدارة الإيقاف، دورة حياة الإيصالات (`begin_upload_attempt`، `mark_upload_result_unknown`، `reconcile_upload_result`)، تحرير قائمة الانتظار (`release_policy_holds`، `release_policy_holds_for_ids`، `filter_bulk_review_items`، `queue_reason_label`) — إيصالات الرفع (`load_upload_receipts`/`compact_upload_receipts`/`save_upload_receipts` و`UPLOAD_RECEIPTS_FILE`) تبقى في الملف الرئيسي لأن اختباراتها تخترق ثوابت المسارات على `app` |
 | `facebook_scraper.py` | جلب روابط Reels ومسار الشبكة إلى فيسبوك |
 | `fburls.py` | تطبيع روابط صفحات وقنوات فيسبوك |
 | `uploaderrors.py` | تصنيف أخطاء الرفع (`classify_upload_error`، `_http_status`...) |
@@ -78,7 +78,21 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirement
 
 ## الحالة الحالية
 
-- الإصدار الحالي: **4.49.30** (تحديث تلقائي للتطبيق: وحدة `updater.py`
+- الإصدار الحالي: **4.49.31** (مراجعة سريعة بالجملة: نافذة جديدة
+  «مراجعة سريعة لقائمة الانتظار» من لوحة التحكم تعرض عناصر
+  `failed_queue.json` مع تصفية بالسبب وبحث في الصفحة/العنوان وتحديد
+  جماعي (A لتحديد الكل، مسافة لتبديل التحديد) وإعادة إدراج المحدد (R)
+  وحذفه (Delete)؛ إعادة الإدراج فرز فقط — العنصر يعود إلى قائمة العمل
+  ليفحص مجدداً ويبقى رفعه خاضعاً لنافذة المراجعة وبوابة الحقوق، وتحرير
+  عنصر محجوب بالأمان/النشر/الحقوق يشترط اكتمال إعدادات تلك البوابة كما
+  في التحرير الجماعي الحالي. وفي حوار المراجعة نفسه: اختصارات لوحة
+  مفاتيح (Ctrl+Enter وA للموافقة، S للتخطي، لا تعمل أثناء الكتابة في
+  حقل نصي)، وتذكّر نموذج الحقوق (الأساس والمرجع والإضافة) من الفيديو
+  السابق في الدورة نفسها بينما الإقرار يُصفَّر دائماً فيتأكد المستخدم
+  لكل فيديو على حدة، وعدّاد «راجعت N في هذه الدورة». 12 اختباراً
+  جديداً؛ المجموعة الكاملة 843 ناجحاً واختباران متخطيان تحت 3.12.3
+  و3.11.18، ودخان Xvfb للنافذة الجديدة ناجح).
+  الإصدار السابق **4.49.30** (تحديث تلقائي للتطبيق: وحدة `updater.py`
   جديدة تفحص أحدث إصدار غير تجريبي على GitHub Releases عند البدء (مرة
   في اليوم كحد أقصى، وخيار `SETTINGS.CHECK_FOR_UPDATES` لإغلاقه) وفي
   أي وقت من زر «التحديثات» في الرأس؛ عند وجود إصدار أحدث تعرض نافذة

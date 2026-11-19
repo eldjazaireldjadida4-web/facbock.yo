@@ -318,20 +318,103 @@ def release_policy_holds(
         if not isinstance(item, Mapping):
             continue
         entry = dict(item)
-        if entry.get("last_error") in {
-            "content_safety_review_required",
-            "publication_approval_required",
-            "rights_review_required",
-            UPLOAD_REJECTED,
-            "abandoned",
-            "invalid_title",
-            "invalid_description",
-            "invalid_tags",
-        }:
+        if entry.get("last_error") in RELEASABLE_QUEUE_ERRORS:
             entry["last_error"] = ""
             count += 1
         released.append(entry)
     return released, count
+
+
+# الأخطاء التي يجوز تحريرها من نافذة المراجعة السريعة بالجملة: التحرير يعيد
+# العنصر إلى قائمة العمل فقط، ويبقى رفعه خاضعاً لنافذة المراجعة وبوابة الحقوق
+# في الدورة التالية؛ لا موافقة على الرفع تحدث هنا أبداً.
+RELEASABLE_QUEUE_ERRORS = frozenset({
+    "content_safety_review_required",
+    "publication_approval_required",
+    "rights_review_required",
+    UPLOAD_REJECTED,
+    "abandoned",
+    "invalid_title",
+    "invalid_description",
+    "invalid_tags",
+})
+
+
+# تسميات عربية لأسباب إيقاف العناصر في قائمة الانتظار.
+QUEUE_REASON_LABELS = {
+    "content_safety_review_required": "مراجعة أمان المحتوى",
+    "publication_approval_required": "موافقة النشر",
+    "rights_review_required": "مراجعة الحقوق",
+    "duplicate_review_required": "احتمال تكرار",
+    UPLOAD_REJECTED: "رفضه YouTube بعد القبول",
+    "abandoned": "محاولة متوقفة",
+    "invalid_title": "عنوان غير صالح",
+    "invalid_description": "وصف غير صالح",
+    "invalid_tags": "وسوم غير صالحة",
+    UPLOAD_IN_PROGRESS: "رفع قيد التنفيذ",
+    UPLOAD_RESULT_UNKNOWN: "نتيجة رفع غير مؤكدة",
+}
+
+
+def queue_reason_label(last_error) -> str:
+    """التسمية العربية لسبب الإيقاف؛ أي قيمة غير معروفة تظهر كما هي."""
+    error = str(last_error or "").strip()
+    if not error:
+        return "جاهز لإعادة الفحص"
+    return QUEUE_REASON_LABELS.get(error, error)
+
+
+def release_policy_holds_for_ids(
+    items: Iterable[QueueItem] | None,
+    source_ids: Iterable[str] | None,
+) -> tuple[list[QueueItem], int]:
+    """يحرر عناصر محددة فقط (بمعرّفاتها) من إيقاف السياسة/الحقوق.
+
+    العناصر غير المحددة أو التي لا تحمل خطأ قابلاً للتحرير تبقى كما هي.
+    مثل release_policy_holds: التحرير يعيد العنصر إلى قائمة العمل فقط.
+    """
+    wanted = {str(value).strip() for value in source_ids or [] if str(value).strip()}
+    released = []
+    count = 0
+    for item in items or []:
+        if not isinstance(item, Mapping):
+            continue
+        entry = dict(item)
+        source_id = str(entry.get("id") or "").strip()
+        if source_id in wanted and entry.get("last_error") in RELEASABLE_QUEUE_ERRORS:
+            entry["last_error"] = ""
+            count += 1
+        released.append(entry)
+    return released, count
+
+
+def filter_bulk_review_items(
+    items: Iterable[QueueItem] | None,
+    reason: str = "",
+    page_query: str = "",
+) -> list[QueueItem]:
+    """عناصر نافذة المراجعة السريعة بعد تصفية السبب والبحث في الصفحة/العنوان.
+
+    reason قيمة last_error الخام أو "" للكل؛ page_query تطابق جزئي غير حساس
+    لحالة الأحرف في الصفحة أو العنوان أو المعرّف أو الرابط.
+    """
+    wanted_reason = str(reason or "").strip()
+    query = str(page_query or "").strip().casefold()
+    result = []
+    for item in items or []:
+        if not isinstance(item, Mapping):
+            continue
+        entry = dict(item)
+        if wanted_reason and str(entry.get("last_error") or "").strip() != wanted_reason:
+            continue
+        if query:
+            haystack = " ".join(str(entry.get(key) or "") for key in (
+                "page", "upload_title", "title", "id", "url",
+            )).casefold()
+            if query not in haystack:
+                continue
+        result.append(entry)
+    return result
 
 
 def release_rights_holds(
